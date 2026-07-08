@@ -1,0 +1,29 @@
+# Build artifacts
+server/jmessage
+server/jmessage.exe
+server/data/
+*.prof
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.env.local
+web/.env.*.local
+
+# IDE & editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Misc
+*.log
+.env
