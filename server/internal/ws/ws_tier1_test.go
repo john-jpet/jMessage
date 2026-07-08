@@ -57,7 +57,7 @@ func TestResumeReplay(t *testing.T) {
 	alice, bob := e.user("alice"), e.user("bob")
 	conv, _ := e.st.CreateConversation(model.ConvDM, "", alice.ID, []string{bob.ID})
 	for i := 0; i < 5; i++ {
-		if _, err := e.st.AppendMessage(conv.ID, alice.ID, "", "m"); err != nil {
+		if _, err := e.st.AppendMessage(conv.ID, alice.ID, "", "m", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,7 +87,7 @@ func TestReceiptBroadcast(t *testing.T) {
 	alice, bob := e.user("alice"), e.user("bob")
 	conv, _ := e.st.CreateConversation(model.ConvDM, "", alice.ID, []string{bob.ID})
 	for i := 0; i < 3; i++ {
-		e.st.AppendMessage(conv.ID, alice.ID, "", "m")
+		e.st.AppendMessage(conv.ID, alice.ID, "", "m", nil)
 	}
 
 	ca := e.dial(alice.ID)
@@ -123,7 +123,7 @@ func TestDeliveredWatermark(t *testing.T) {
 	alice, bob := e.user("alice"), e.user("bob")
 	conv, _ := e.st.CreateConversation(model.ConvDM, "", alice.ID, []string{bob.ID})
 	for i := 0; i < 2; i++ {
-		e.st.AppendMessage(conv.ID, alice.ID, "", "m")
+		e.st.AppendMessage(conv.ID, alice.ID, "", "m", nil)
 	}
 
 	ca := e.dial(alice.ID)

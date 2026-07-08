@@ -19,6 +19,11 @@ var (
 	ErrNotFound      = errors.New("store: not found")
 	ErrUsernameTaken = errors.New("store: username taken")
 	ErrNotMember     = errors.New("store: not a conversation member")
+
+	// ErrBadAttachment: unknown, already-used, or deleted attachment.
+	ErrBadAttachment = errors.New("store: attachment missing or not usable")
+	// ErrNotAttachmentOwner: sender doesn't own the attachment.
+	ErrNotAttachmentOwner = errors.New("store: not the attachment owner")
 )
 
 // Store wraps the PetDB handle with typed operations. One Store owns
@@ -54,7 +59,7 @@ func Open(dir string, logger *slog.Logger) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s.seqs = newSeqAllocator(db)
+	s.seqs = newSeqAllocator(s)
 	return s, nil
 }
 

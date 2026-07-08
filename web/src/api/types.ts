@@ -41,12 +41,21 @@ export interface SyncChange {
   latestSeq: number;
 }
 
+/** Render metadata for one attachment (bytes live at /api/attachments/{id}). */
+export interface AttachmentRef {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
 export interface Message {
   convID: string;
   seq: number;
   senderID: string;
   body: string;
   ts: number;
+  attachments?: AttachmentRef[];
 }
 
 export interface HistoryPage {
@@ -88,4 +97,6 @@ export interface Frame {
   lastSeen?: Record<string, number>;
   deliveredSeq?: number;
   readSeq?: number;
+  attachmentIDs?: string[]; // client → server on send
+  attachments?: AttachmentRef[]; // server → client on ack/message
 }

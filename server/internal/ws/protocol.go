@@ -17,7 +17,11 @@
 // retrying a send frame acks the originally assigned seq, never a dup.
 package ws
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"jmessage/internal/model"
+)
 
 // Frame is the single wire shape for both directions; unused fields are
 // omitted from the JSON.
@@ -38,6 +42,11 @@ type Frame struct {
 	LastSeen     map[string]uint64 `json:"lastSeen,omitempty"` // resume: convID -> last seq held
 	DeliveredSeq uint64            `json:"deliveredSeq,omitempty"`
 	ReadSeq      uint64            `json:"readSeq,omitempty"`
+
+	// Tier 2 attachment fields: IDs client→server on send; full render
+	// refs server→client on ack/message.
+	AttachmentIDs []string              `json:"attachmentIDs,omitempty"`
+	Attachments   []model.AttachmentRef `json:"attachments,omitempty"`
 }
 
 const (
@@ -57,6 +66,9 @@ const (
 
 // maxBodyBytes bounds one message body (also enforced client-side).
 const maxBodyBytes = 8 << 10
+
+// maxAttachments bounds attachments per message.
+const maxAttachments = 10
 
 func encode(f Frame) []byte {
 	b, _ := json.Marshal(f)

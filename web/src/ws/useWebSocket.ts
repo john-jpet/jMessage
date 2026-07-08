@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, getToken } from "../api/client";
+import { api, getToken, uploadBlob } from "../api/client";
 import type { Frame, Message, ReadState, SyncChange } from "../api/types";
 import { db, deviceID, lastSeenMap, storeMessage, storeMessages } from "../db/local";
 
@@ -12,7 +12,7 @@ export interface WsApi {
   presence: Map<string, boolean>;
   /** convID -> userID -> live watermark (merge with REST receipts) */
   receipts: Map<string, Map<string, ReadState>>;
-  sendMessage: (convID: string, body: string) => void;
+  sendMessage: (convID: string, body: string, files?: File[]) => void;
   sendTyping: (convID: string) => void;
   sendRead: (convID: string, seq: number) => void;
   retry: (tempID: string) => void;
@@ -77,6 +77,7 @@ export function useWebSocket(selfID: string): WsApi {
             senderID: f.senderID!,
             body: f.body ?? "",
             ts: f.ts ?? Date.now(),
+            attachments: f.attachments,
           };
           void storeMessage(msg);
           // Confirm receipt so the sender's ✓✓ can light up.
@@ -96,8 +97,12 @@ export function useWebSocket(selfID: string): WsApi {
                 senderID: selfID,
                 body: row.body,
                 ts: f.ts ?? row.ts,
+                attachments: f.attachments,
               });
               await db.outbox.delete(row.tempID);
+              if (row.attachmentLocalIDs) {
+                await db.attachments.bulkDelete(row.attachmentLocalIDs);
+              }
             }
             waiter?.(true);
             queryClient.invalidateQueries({ queryKey: ["conversations"] });
@@ -152,28 +157,66 @@ export function useWebSocket(selfID: string): WsApi {
 
   /** transmit sends one outbox row and resolves on ack (false on error
    *  frame or timeout). */
-  const transmit = useCallback((tempID: string, convID: string, body: string) => {
-    return new Promise<boolean>((resolve) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        resolve(false);
-        return;
-      }
-      const timer = window.setTimeout(() => {
-        ackWaitersRef.current.delete(tempID);
-        resolve(false);
-      }, ACK_TIMEOUT_MS);
-      ackWaitersRef.current.set(tempID, (ok) => {
-        clearTimeout(timer);
-        ackWaitersRef.current.delete(tempID);
-        resolve(ok);
+  const transmit = useCallback(
+    (tempID: string, convID: string, body: string, attachmentIDs?: string[]) => {
+      return new Promise<boolean>((resolve) => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          resolve(false);
+          return;
+        }
+        const timer = window.setTimeout(() => {
+          ackWaitersRef.current.delete(tempID);
+          resolve(false);
+        }, ACK_TIMEOUT_MS);
+        ackWaitersRef.current.set(tempID, (ok) => {
+          clearTimeout(timer);
+          ackWaitersRef.current.delete(tempID);
+          resolve(ok);
+        });
+        ws.send(JSON.stringify({ type: "send", tempID, convID, body, attachmentIDs }));
       });
-      ws.send(JSON.stringify({ type: "send", tempID, convID, body }));
-    });
+    },
+    [],
+  );
+
+  /** uploadRowAttachments ensures every local attachment of an outbox
+   *  row has a server ID, uploading any that don't (sequentially).
+   *  Returns the server IDs, or null if an upload failed. A crash after
+   *  an upload but before the send re-uses the stored serverID — and a
+   *  lost serverID merely re-uploads, orphaning a Pending record the
+   *  server janitor reclaims. */
+  const uploadRowAttachments = useCallback(async (localIDs: string[]) => {
+    const serverIDs: string[] = [];
+    for (const lid of localIDs) {
+      const att = await db.attachments.get(lid);
+      if (!att) return null; // row is unsendable without its file
+      if (att.serverID) {
+        serverIDs.push(att.serverID);
+        continue;
+      }
+      if (!att.blob) return null;
+      await db.attachments.update(lid, { state: "uploading" });
+      try {
+        const ref = await uploadBlob(att.blob, att.filename);
+        // Blob cleared after upload: the server owns the bytes now.
+        await db.attachments.update(lid, {
+          serverID: ref.id,
+          state: "uploaded",
+          blob: undefined,
+        });
+        serverIDs.push(ref.id);
+      } catch {
+        await db.attachments.update(lid, { state: "failed" });
+        return null;
+      }
+    }
+    return serverIDs;
   }, []);
 
-  /** flushOutbox drains pending rows FIFO, one in flight at a time.
-   *  Stopping on the first failure preserves per-conversation order. */
+  /** flushOutbox drains pending rows FIFO, one in flight at a time,
+   *  uploading each row's attachments before its send. Stopping on the
+   *  first failure preserves per-conversation order. */
   const flushOutbox = useCallback(async () => {
     if (flushingRef.current) return;
     flushingRef.current = true;
@@ -182,7 +225,18 @@ export function useWebSocket(selfID: string): WsApi {
         const rows = await db.outbox.orderBy("ts").toArray();
         const next = rows.find((r) => r.state === "pending");
         if (!next) return;
-        const ok = await transmit(next.tempID, next.convID, next.body);
+
+        let attachmentIDs: string[] | undefined;
+        if (next.attachmentLocalIDs?.length) {
+          const ids = await uploadRowAttachments(next.attachmentLocalIDs);
+          if (!ids) {
+            await db.outbox.update(next.tempID, { state: "failed" });
+            return;
+          }
+          attachmentIDs = ids;
+        }
+
+        const ok = await transmit(next.tempID, next.convID, next.body, attachmentIDs);
         if (!ok) {
           const still = await db.outbox.get(next.tempID);
           if (still) await db.outbox.update(next.tempID, { state: "failed" });
@@ -192,7 +246,7 @@ export function useWebSocket(selfID: string): WsApi {
     } finally {
       flushingRef.current = false;
     }
-  }, [transmit]);
+  }, [transmit, uploadRowAttachments]);
 
   /** runSync pulls everything missing via REST and stores it locally. */
   const runSync = useCallback(async () => {
@@ -280,8 +334,23 @@ export function useWebSocket(selfID: string): WsApi {
   }, [handleFrame, queryClient, runSync, flushOutbox]);
 
   const sendMessage = useCallback(
-    (convID: string, body: string) => {
+    (convID: string, body: string, files?: File[]) => {
       void (async () => {
+        // Files land in IndexedDB first — an offline-composed attachment
+        // survives refreshes exactly like outbox text does.
+        const localIDs: string[] = [];
+        for (const f of files ?? []) {
+          const localID = crypto.randomUUID();
+          await db.attachments.put({
+            localID,
+            filename: f.name || "file",
+            mime: f.type || "application/octet-stream",
+            size: f.size,
+            state: "local",
+            blob: f,
+          });
+          localIDs.push(localID);
+        }
         // Durable before any network attempt: survives refresh/offline.
         await db.outbox.put({
           tempID: crypto.randomUUID(),
@@ -289,6 +358,7 @@ export function useWebSocket(selfID: string): WsApi {
           body,
           ts: Date.now(),
           state: "pending",
+          attachmentLocalIDs: localIDs.length > 0 ? localIDs : undefined,
         });
         void flushOutbox();
       })();

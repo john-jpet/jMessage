@@ -13,6 +13,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"jmessage/internal/auth"
+	"jmessage/internal/blob"
 	"jmessage/internal/store"
 )
 
@@ -29,10 +30,12 @@ func (NoPresence) IsOnline(string) bool { return false }
 
 // Server carries the dependencies handlers need.
 type Server struct {
-	Store    *store.Store
-	Tokens   *auth.Tokens
-	Presence Presence
-	Logger   *slog.Logger
+	Store          *store.Store
+	Blobs          *blob.Store
+	Tokens         *auth.Tokens
+	Presence       Presence
+	Logger         *slog.Logger
+	MaxUploadBytes int64 // 0 = DefaultMaxUploadBytes
 }
 
 // Router assembles the full HTTP mux. wsHandler (may be nil) is mounted
@@ -56,7 +59,12 @@ func (s *Server) Router(wsHandler http.Handler) http.Handler {
 		r.Post("/api/conversations/{id}/members", s.handleAddMember)
 		r.Get("/api/conversations/{id}/messages", s.handleHistory)
 		r.Get("/api/conversations/{id}/receipts", s.handleReceipts)
+		r.Post("/api/uploads", s.handleUpload)
 	})
+
+	// Outside the Bearer-only group: does its own header-or-query token
+	// check so <img src> can load attachments.
+	r.Get("/api/attachments/{id}", s.handleDownload)
 
 	if wsHandler != nil {
 		r.Handle("/ws", wsHandler)

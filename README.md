@@ -62,8 +62,16 @@ IndexedDB outbox that survives page refreshes, idempotent delivery
 WebSocket resume for small gaps, delivery + read receipts (✓/✓✓), unread
 counts, multi-device support with a device registry.
 
-**Excluded (by design):** file attachments, reactions, full-text search,
-message edit/delete, push notifications, encryption.
+**Tier 2 (Attachment Storage):** file/image attachments with the bytes
+stored *outside* PetDB in a flat blob directory — PetDB holds only
+metadata and references. Streaming uploads (hash + MIME sniff en route,
+atomic rename), membership-authorized downloads with range support,
+offline attachment composition (the file itself survives a page refresh
+in IndexedDB), and a janitor for abandoned uploads and orphan blobs.
+
+**Excluded (by design):** reactions, full-text search, message
+edit/delete, push notifications, encryption, video transcoding,
+thumbnails, resumable uploads.
 
 ## Server packages (`server/internal/`)
 
@@ -102,6 +110,44 @@ conversations created while offline).
 key per (message, user). A message is delivered/read by a peer iff their
 watermark ≥ its seq; unread count is `lastSeq − readSeq`. Watermark
 changes fan out as `receipt` frames; REST hydrates on conversation open.
+
+## Tier 2: how attachments work
+
+**Bytes never enter PetDB.** An upload streams to `<data>/blobs/tmp/`,
+is hashed (SHA-256) and MIME-sniffed en route, fsynced, then atomically
+renamed to `blobs/<uuid>.bin`. Only then does PetDB get the metadata
+record `attachment:<uuid>` (state *Pending*). A crash between the two
+leaves an orphan blob for the janitor — never a dangling reference.
+
+**Commit on send.** A message referencing attachments validates them
+under the conversation mutex (owner + Pending; attachments are
+single-use), embeds render refs (`{id, filename, mimeType, size}`) in
+the message document, then flips each attachment to *Committed* and
+stamps its `convID`. Refs ride inside message JSON, so history, sync,
+and resume carry them with **zero extra code**.
+
+**Crash gap the spec missed, closed:** if the server dies after the
+message write but before the state flip, the referenced attachment
+looks Pending — and the janitor prunes stale Pending records. The seq
+allocator's recovery scan (the same one that rebuilds `clientmsg:`
+entries) re-commits attachments referenced by scanned messages, so a
+referenced attachment can never be janitored.
+
+**Download authorization** is rooted at the attachment's `convID`:
+Committed → requester must be a conversation member; Pending → owner
+only. Responses set `Cache-Control: private` + `Vary: Authorization` so
+one user's cached bytes are never replayed for another request — a bug
+the browser E2E actually caught.
+
+**Offline attachments:** a picked file is stored as a Blob in IndexedDB
+before any network attempt, referenced from the outbox row. The flush
+uploads blobs first (reusing stored server IDs on retry), then sends the
+message — so "compose with image → crash → refresh → restart" delivers
+exactly one message with exactly one attachment.
+
+**Janitor sweeps** (hourly): Pending attachments older than 24 h (blob
+first, then metadata), finalized blobs with no metadata record (1 h age
+guard covers in-flight uploads), and crashed temp files.
 
 ## Design principles: working without transactions
 

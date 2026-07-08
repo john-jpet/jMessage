@@ -52,14 +52,52 @@ type Member struct {
 
 // Message is the stored message record (value of message:<cid>:<seq>).
 // ClientMsgID is embedded so the clientmsg: idempotency index can be
-// rebuilt from message docs during allocator recovery.
+// rebuilt from message docs during allocator recovery. Attachments hold
+// render metadata only — blob bytes never live in PetDB.
 type Message struct {
-	ConvID      string `json:"convID"`
-	Seq         uint64 `json:"seq"`
-	SenderID    string `json:"senderID"`
-	Body        string `json:"body"`
-	TS          int64  `json:"ts"` // unix ms
-	ClientMsgID string `json:"clientMsgID,omitempty"`
+	ConvID      string          `json:"convID"`
+	Seq         uint64          `json:"seq"`
+	SenderID    string          `json:"senderID"`
+	Body        string          `json:"body"`
+	TS          int64           `json:"ts"` // unix ms
+	ClientMsgID string          `json:"clientMsgID,omitempty"`
+	Attachments []AttachmentRef `json:"attachments,omitempty"`
+}
+
+// Attachment lifecycle states.
+const (
+	AttachmentPending   = "pending"   // uploaded, not yet referenced by a message
+	AttachmentCommitted = "committed" // referenced by a message in ConvID
+	AttachmentDeleted   = "deleted"
+)
+
+// Attachment is the stored metadata record (value of attachment:<id>).
+// The bytes live in the blob store at blobs/<id>.bin. ConvID is stamped
+// when a message commits the attachment and is the authorization root
+// for downloads.
+type Attachment struct {
+	ID        string `json:"id"`
+	OwnerID   string `json:"ownerID"`
+	ConvID    string `json:"convID,omitempty"`
+	Filename  string `json:"filename"`
+	MimeType  string `json:"mimeType"`
+	Size      int64  `json:"size"`
+	SHA256    string `json:"sha256"`
+	State     string `json:"state"`
+	CreatedAt int64  `json:"createdAt"`           // unix ms
+	ExpiresAt int64  `json:"expiresAt,omitempty"` // future: expiry enforcement
+}
+
+// AttachmentRef is the render metadata embedded in messages and frames.
+type AttachmentRef struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mimeType"`
+	Size     int64  `json:"size"`
+}
+
+func (a *Attachment) Ref() AttachmentRef {
+	return AttachmentRef{ID: a.ID, Filename: a.Filename, MimeType: a.MimeType, Size: a.Size}
 }
 
 // ReadState is the per-(user, conversation) watermark record (value of

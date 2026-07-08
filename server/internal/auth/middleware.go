@@ -21,6 +21,17 @@ func WithUserID(ctx context.Context, uid string) context.Context {
 	return context.WithValue(ctx, ctxKey{}, uid)
 }
 
+// VerifyRequest authenticates a request from its Bearer header or, if
+// absent, a ?token= query parameter. The query form exists for browser
+// contexts that cannot set headers (<img> attachment loads, WebSocket
+// dials) — the same documented tradeoff as /ws.
+func (t *Tokens) VerifyRequest(r *http.Request) (string, error) {
+	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && token != "" {
+		return t.Verify(token)
+	}
+	return t.Verify(r.URL.Query().Get("token"))
+}
+
 // Middleware rejects requests without a valid Bearer token and injects
 // the user ID into the context for handlers downstream.
 func (t *Tokens) Middleware(next http.Handler) http.Handler {

@@ -22,6 +22,7 @@ import (
 //	clientmsg:<uid>:<clientMsgID>  send idempotency -> {convID, seq, ts}
 //	read:<uid>:<cid>               delivered/read watermarks
 //	device:<uid>:<deviceID>        device registry
+//	attachment:<uuid>              attachment metadata (bytes in blobs/)
 
 func pad10(n uint64) string { return fmt.Sprintf("%010d", n) }
 func pad14(n uint64) string { return fmt.Sprintf("%014d", n) }
@@ -57,6 +58,10 @@ func readStateKey(uid, cid string) []byte { return []byte("read:" + uid + ":" + 
 
 func deviceKey(uid, deviceID string) []byte { return []byte("device:" + uid + ":" + deviceID) }
 func devicePrefix(uid string) []byte        { return []byte("device:" + uid + ":") }
+
+func attachmentKey(id string) []byte { return []byte("attachment:" + id) }
+
+const attachmentPrefix = "attachment:"
 
 // prefixEnd returns the exclusive upper bound for a prefix scan: the
 // prefix with its last byte incremented. All key bytes here are ASCII,

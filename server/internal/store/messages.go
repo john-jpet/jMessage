@@ -32,6 +32,7 @@ type seqAllocator struct {
 	mu    sync.Mutex // guards convs map
 	convs map[string]*convSeq
 	db    *petdb.DB
+	store *Store // for attachment re-commit during recovery
 }
 
 type convSeq struct {
@@ -40,8 +41,8 @@ type convSeq struct {
 	loaded bool
 }
 
-func newSeqAllocator(db *petdb.DB) *seqAllocator {
-	return &seqAllocator{convs: make(map[string]*convSeq), db: db}
+func newSeqAllocator(s *Store) *seqAllocator {
+	return &seqAllocator{convs: make(map[string]*convSeq), db: s.db, store: s}
 }
 
 func (a *seqAllocator) get(cid string) *convSeq {
@@ -90,7 +91,8 @@ func (a *seqAllocator) loadLocked(cid string, cs *convSeq) error {
 			last = seq
 		}
 		var m model.Message
-		if err := jsonUnmarshal(it.Value(), &m); err == nil && m.ClientMsgID != "" {
+		if err := jsonUnmarshal(it.Value(), &m); err == nil &&
+			(m.ClientMsgID != "" || len(m.Attachments) > 0) {
 			rebuild = append(rebuild, m)
 		}
 	}
@@ -101,14 +103,45 @@ func (a *seqAllocator) loadLocked(cid string, cs *convSeq) error {
 	}
 
 	for _, m := range rebuild {
-		ref, _ := json.Marshal(clientMsgRef{ConvID: m.ConvID, Seq: m.Seq, TS: m.TS})
-		if err := a.db.Put(clientMsgKey(m.SenderID, m.ClientMsgID), ref); err != nil {
+		if m.ClientMsgID != "" {
+			ref, _ := json.Marshal(clientMsgRef{ConvID: m.ConvID, Seq: m.Seq, TS: m.TS})
+			if err := a.db.Put(clientMsgKey(m.SenderID, m.ClientMsgID), ref); err != nil {
+				return err
+			}
+		}
+		// Re-commit attachments whose state flip a crash may have lost —
+		// a referenced attachment must never look Pending (the janitor
+		// prunes stale Pending records).
+		if err := a.store.commitAttachments(cid, m.Attachments); err != nil {
 			return err
 		}
 	}
 
 	cs.last = last
 	cs.loaded = true
+	return nil
+}
+
+// commitAttachments flips referenced attachments to Committed and
+// stamps the conversation that owns them (idempotent).
+func (s *Store) commitAttachments(cid string, refs []model.AttachmentRef) error {
+	for _, ref := range refs {
+		a, err := s.GetAttachment(ref.ID)
+		if errors.Is(err, ErrNotFound) {
+			continue // already janitored or deleted; nothing to flip
+		}
+		if err != nil {
+			return err
+		}
+		if a.State == model.AttachmentCommitted && a.ConvID == cid {
+			continue
+		}
+		a.State = model.AttachmentCommitted
+		a.ConvID = cid
+		if err := s.putJSON(attachmentKey(a.ID), a); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -131,11 +164,16 @@ func (s *Store) LastSeq(cid string) (uint64, error) {
 //
 // A non-empty clientMsgID makes the call idempotent: a retry with the
 // same (sender, clientMsgID) returns the originally stored message
-// without appending. Write order: message (embeds clientMsgID) →
-// clientmsg: index → hint. The dedup check runs after loadLocked, which
-// rebuilds any index entry a crash may have dropped, so retries across
-// server restarts dedup correctly too.
-func (s *Store) AppendMessage(cid, senderID, clientMsgID, body string) (*model.Message, error) {
+// without appending.
+//
+// attachmentIDs must name Pending attachments owned by senderID; they
+// are committed (state flip + ConvID stamp) after the message write.
+// Write order: message (embeds clientMsgID + refs) → attachment
+// commits → clientmsg: index → hint. The dedup check and any recovery
+// rebuilding (clientmsg entries, attachment re-commits) happen in
+// loadLocked before this runs, so retries across crashes both dedup
+// and never leave a referenced attachment looking Pending.
+func (s *Store) AppendMessage(cid, senderID, clientMsgID, body string, attachmentIDs []string) (*model.Message, error) {
 	cs := s.seqs.get(cid)
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -160,6 +198,30 @@ func (s *Store) AppendMessage(cid, senderID, clientMsgID, body string) (*model.M
 		}
 	}
 
+	// Validate attachments before anything is written: Pending + owned
+	// by the sender. Single-use by design — an attachment belongs to
+	// exactly one conversation (its ConvID authorizes downloads).
+	refs := make([]model.AttachmentRef, 0, len(attachmentIDs))
+	for _, id := range dedupe(append([]string(nil), attachmentIDs...)) {
+		a, err := s.GetAttachment(id)
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrBadAttachment
+		}
+		if err != nil {
+			return nil, err
+		}
+		if a.OwnerID != senderID {
+			return nil, ErrNotAttachmentOwner
+		}
+		if a.State != model.AttachmentPending {
+			return nil, ErrBadAttachment
+		}
+		refs = append(refs, a.Ref())
+	}
+	if len(refs) == 0 {
+		refs = nil
+	}
+
 	msg := &model.Message{
 		ConvID:      cid,
 		Seq:         cs.last + 1,
@@ -167,11 +229,19 @@ func (s *Store) AppendMessage(cid, senderID, clientMsgID, body string) (*model.M
 		Body:        body,
 		TS:          time.Now().UnixMilli(),
 		ClientMsgID: clientMsgID,
+		Attachments: refs,
 	}
 	if err := s.putJSON(msgKey(cid, msg.Seq), msg); err != nil {
 		return nil, err // last not advanced: the seq will be reused
 	}
 	cs.last = msg.Seq
+
+	if err := s.commitAttachments(cid, refs); err != nil {
+		// Message is durable; the hint below must NOT be written so the
+		// next recovery scan re-commits these attachments.
+		s.logger.Warn("attachment commit failed", "conv", cid, "err", err)
+		return msg, nil
+	}
 
 	if clientMsgID != "" {
 		ref := clientMsgRef{ConvID: cid, Seq: msg.Seq, TS: msg.TS}
@@ -201,7 +271,11 @@ func (s *Store) touchConversation(cid string, msg *model.Message) error {
 		return err
 	}
 	c.LastActivityTS = msg.TS
-	c.LastPreview = truncate(msg.Body, 80)
+	preview := msg.Body
+	if preview == "" && len(msg.Attachments) > 0 {
+		preview = "📎 " + msg.Attachments[0].Filename
+	}
+	c.LastPreview = truncate(preview, 80)
 	c.LastSenderID = msg.SenderID
 	return s.putJSON(convKey(cid), &c)
 }

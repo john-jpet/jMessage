@@ -230,6 +230,7 @@ func (c *Client) handleResume(f Frame) {
 			c.trySend(encode(Frame{
 				Type: TypeMessage, ConvID: m.ConvID, Seq: m.Seq,
 				SenderID: m.SenderID, Body: m.Body, TS: m.TS,
+				Attachments: m.Attachments,
 			}))
 		}
 	}
@@ -271,8 +272,13 @@ func (c *Client) handleWatermark(f Frame, read bool) {
 // conversation's online members (the sender's other devices included,
 // this connection excluded).
 func (c *Client) handleSend(f Frame) {
-	if f.Body == "" || len(f.Body) > maxBodyBytes {
+	// A message needs a body or at least one attachment.
+	if (f.Body == "" && len(f.AttachmentIDs) == 0) || len(f.Body) > maxBodyBytes {
 		c.trySend(errorFrame("too_large", "message body empty or too large", f.TempID))
+		return
+	}
+	if len(f.AttachmentIDs) > maxAttachments {
+		c.trySend(errorFrame("too_many_attachments", "too many attachments", f.TempID))
 		return
 	}
 	if len(f.TempID) > 64 { // it becomes part of a PetDB key
@@ -291,8 +297,15 @@ func (c *Client) handleSend(f Frame) {
 
 	// tempID doubles as the durable idempotency key: a retried frame
 	// (lost ack, reconnect replay) acks the original seq, never a dup.
-	msg, err := c.store.AppendMessage(f.ConvID, c.UserID, f.TempID, f.Body)
-	if err != nil {
+	msg, err := c.store.AppendMessage(f.ConvID, c.UserID, f.TempID, f.Body, f.AttachmentIDs)
+	switch {
+	case errors.Is(err, store.ErrBadAttachment):
+		c.trySend(errorFrame("bad_attachment", "attachment missing or already used", f.TempID))
+		return
+	case errors.Is(err, store.ErrNotAttachmentOwner):
+		c.trySend(errorFrame("not_owner", "attachment belongs to another user", f.TempID))
+		return
+	case err != nil:
 		c.logger.Error("append message", "conv", f.ConvID, "err", err)
 		c.trySend(errorFrame("internal", "message could not be persisted", f.TempID))
 		return
@@ -300,6 +313,7 @@ func (c *Client) handleSend(f Frame) {
 
 	c.trySend(encode(Frame{
 		Type: TypeAck, TempID: f.TempID, ConvID: msg.ConvID, Seq: msg.Seq, TS: msg.TS,
+		Attachments: msg.Attachments,
 	}))
 
 	members, err := c.store.ListMembers(msg.ConvID)
@@ -309,5 +323,6 @@ func (c *Client) handleSend(f Frame) {
 	c.hub.sendToUsers(members, c, encode(Frame{
 		Type: TypeMessage, ConvID: msg.ConvID, Seq: msg.Seq,
 		SenderID: msg.SenderID, Body: msg.Body, TS: msg.TS,
+		Attachments: msg.Attachments,
 	}))
 }

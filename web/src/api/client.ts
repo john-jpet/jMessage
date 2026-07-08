@@ -30,6 +30,35 @@ export class ApiError extends Error {
   }
 }
 
+/** uploadBlob streams file bytes to the server in a single request and
+ *  returns the attachment's render metadata. The attachment is Pending
+ *  until a message references it. */
+export async function uploadBlob(
+  blob: Blob,
+  filename: string,
+): Promise<{ id: string; filename: string; mimeType: string; size: number }> {
+  const resp = await fetch("/api/uploads", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${getToken()}`,
+      "X-Filename": filename,
+      "Content-Type": blob.type || "application/octet-stream",
+    },
+    body: blob,
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new ApiError(resp.status, (data as { error?: string }).error ?? resp.statusText);
+  }
+  return data as { id: string; filename: string; mimeType: string; size: number };
+}
+
+/** attachmentURL builds the byte URL; the token rides the query string
+ *  because <img> cannot set headers. */
+export function attachmentURL(id: string): string {
+  return `/api/attachments/${id}?token=${encodeURIComponent(getToken() ?? "")}`;
+}
+
 /** JSON fetch wrapper; injects the Bearer token, maps errors, and
  *  bounces to login on 401. */
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {

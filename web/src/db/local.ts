@@ -10,6 +10,21 @@ export interface OutboxMessage {
   body: string;
   ts: number;
   state: "pending" | "failed";
+  /** Local attachment IDs to upload before this message can transmit. */
+  attachmentLocalIDs?: string[];
+}
+
+/** A file picked by the user. The Blob itself lives in IndexedDB until
+ *  the upload succeeds — offline-composed attachments survive refreshes
+ *  exactly like outbox text does. */
+export interface LocalAttachment {
+  localID: string;
+  serverID?: string;
+  filename: string;
+  mime: string;
+  size: number;
+  state: "local" | "uploading" | "uploaded" | "failed";
+  blob?: Blob;
 }
 
 /** Highest contiguous-tip seq we hold per conversation; what we tell the
@@ -23,6 +38,7 @@ class LocalDB extends Dexie {
   messages!: Table<Message, [string, number]>;
   outbox!: Table<OutboxMessage, string>;
   syncState!: Table<SyncState, string>;
+  attachments!: Table<LocalAttachment, string>;
 
   constructor() {
     super("jmessage");
@@ -32,6 +48,10 @@ class LocalDB extends Dexie {
       messages: "[convID+seq], convID",
       outbox: "tempID, convID, ts",
       syncState: "convID",
+    });
+    // Tier 2: locally-composed attachments (blob kept until uploaded).
+    this.version(2).stores({
+      attachments: "localID",
     });
   }
 }
@@ -44,7 +64,12 @@ const OWNER_KEY = "jmessage.dbOwner";
  *  in on this browser — cached conversations must not leak across users. */
 export async function ensureLocalOwner(userID: string): Promise<void> {
   if (localStorage.getItem(OWNER_KEY) === userID) return;
-  await Promise.all([db.messages.clear(), db.outbox.clear(), db.syncState.clear()]);
+  await Promise.all([
+    db.messages.clear(),
+    db.outbox.clear(),
+    db.syncState.clear(),
+    db.attachments.clear(),
+  ]);
   localStorage.setItem(OWNER_KEY, userID);
 }
 

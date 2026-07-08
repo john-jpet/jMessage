@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLiveQuery } from "dexie-react-hooks";
-import { api } from "../api/client";
-import type { HistoryPage, ReadState, Receipt } from "../api/types";
-import { db, storeMessages } from "../db/local";
+import { api, attachmentURL } from "../api/client";
+import type { AttachmentRef, HistoryPage, ReadState, Receipt } from "../api/types";
+import { db, storeMessages, type LocalAttachment } from "../db/local";
+import { formatSize } from "./Composer";
 
 interface Props {
   convID: string;
@@ -39,6 +40,14 @@ export default function MessagePane({
     useLiveQuery(() => db.messages.where("convID").equals(convID).sortBy("seq"), [convID]) ?? [];
   const outbox =
     useLiveQuery(() => db.outbox.where("convID").equals(convID).sortBy("ts"), [convID]) ?? [];
+  // Local attachments backing the pending rows (for uploading chips).
+  const localAtts =
+    useLiveQuery(async () => {
+      const ids = outbox.flatMap((r) => r.attachmentLocalIDs ?? []);
+      if (ids.length === 0) return new Map<string, LocalAttachment>();
+      const rows = await db.attachments.bulkGet(ids);
+      return new Map(rows.filter((r): r is LocalAttachment => !!r).map((r) => [r.localID, r]));
+    }, [outbox]) ?? new Map<string, LocalAttachment>();
 
   // Hydration for ✓/✓✓: REST snapshot merged with live receipt frames.
   const { data: restReceipts } = useQuery({
@@ -113,6 +122,7 @@ export default function MessagePane({
           body={m.body}
           meta={`#${m.seq} · ${new Date(m.ts).toLocaleTimeString()}`}
           ticks={m.senderID === selfID ? tickState(m.seq, peerState) : undefined}
+          attachments={m.attachments}
         />
       ))}
       {outbox.map((p) => (
@@ -123,6 +133,9 @@ export default function MessagePane({
           meta={p.state === "failed" ? "failed — will retry on reconnect" : "sending…"}
           failed={p.state === "failed"}
           onRetry={p.state === "failed" ? () => onRetry(p.tempID) : undefined}
+          pendingAtts={(p.attachmentLocalIDs ?? [])
+            .map((id) => localAtts.get(id))
+            .filter((a): a is LocalAttachment => !!a)}
         />
       ))}
       {typing.size > 0 && (
@@ -165,6 +178,8 @@ function Bubble({
   failed,
   ticks,
   onRetry,
+  attachments,
+  pendingAtts,
 }: {
   mine: boolean;
   body: string;
@@ -172,6 +187,8 @@ function Bubble({
   failed?: boolean;
   ticks?: Ticks;
   onRetry?: () => void;
+  attachments?: AttachmentRef[];
+  pendingAtts?: LocalAttachment[];
 }) {
   return (
     <div className={`mb-2 flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -184,7 +201,39 @@ function Bubble({
               : "bg-white text-slate-800 shadow-sm"
         }`}
       >
-        <p className="whitespace-pre-wrap break-words">{body}</p>
+        {attachments?.map((a) =>
+          a.mimeType.startsWith("image/") ? (
+            <a key={a.id} href={attachmentURL(a.id)} target="_blank" rel="noreferrer">
+              <img
+                src={attachmentURL(a.id)}
+                alt={a.filename}
+                loading="lazy"
+                className="mb-1 max-h-64 max-w-full rounded"
+              />
+            </a>
+          ) : (
+            <a
+              key={a.id}
+              href={attachmentURL(a.id)}
+              download={a.filename}
+              className={`mb-1 block rounded px-2 py-1 text-xs underline ${
+                mine ? "bg-blue-700 text-blue-100" : "bg-slate-100 text-slate-700"
+              }`}
+            >
+              📎 {a.filename} ({formatSize(a.size)})
+            </a>
+          ),
+        )}
+        {pendingAtts?.map((a) => (
+          <span
+            key={a.localID}
+            className="mb-1 block rounded bg-blue-700/60 px-2 py-1 text-xs text-blue-100"
+          >
+            📎 {a.filename} ({formatSize(a.size)}) —{" "}
+            {a.state === "uploading" ? "uploading…" : a.state === "failed" ? "upload failed" : "queued"}
+          </span>
+        ))}
+        {body && <p className="whitespace-pre-wrap break-words">{body}</p>}
         <p className={`mt-0.5 text-[10px] ${mine && !failed ? "text-blue-200" : "text-slate-400"}`}>
           {meta}
           {ticks && (

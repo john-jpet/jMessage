@@ -37,12 +37,12 @@ func tier1Fixture(t *testing.T) (s *Store, dir string, alice, bob *model.User, c
 func TestIdempotentAppend(t *testing.T) {
 	s, _, alice, _, conv := tier1Fixture(t)
 
-	m1, err := s.AppendMessage(conv.ID, alice.ID, "cmid-1", "hello")
+	m1, err := s.AppendMessage(conv.ID, alice.ID, "cmid-1", "hello", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Retry with the same clientMsgID: same message back, nothing appended.
-	m2, err := s.AppendMessage(conv.ID, alice.ID, "cmid-1", "hello")
+	m2, err := s.AppendMessage(conv.ID, alice.ID, "cmid-1", "hello", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,12 +53,12 @@ func TestIdempotentAppend(t *testing.T) {
 		t.Fatalf("LastSeq = %d after retried send, want 1", last)
 	}
 	// A different clientMsgID appends normally.
-	m3, err := s.AppendMessage(conv.ID, alice.ID, "cmid-2", "world")
+	m3, err := s.AppendMessage(conv.ID, alice.ID, "cmid-2", "world", nil)
 	if err != nil || m3.Seq != 2 {
 		t.Fatalf("m3 = %+v, %v", m3, err)
 	}
 	// Retries are per-sender: bob using the same ID is a different message.
-	m4, err := s.AppendMessage(conv.ID, "0000000002", "cmid-1", "bob speaking")
+	m4, err := s.AppendMessage(conv.ID, "0000000002", "cmid-1", "bob speaking", nil)
 	if err != nil || m4.Seq != 3 {
 		t.Fatalf("m4 = %+v, %v", m4, err)
 	}
@@ -71,7 +71,7 @@ func TestIdempotentAppend(t *testing.T) {
 func TestIdempotencyRebuildAfterCrash(t *testing.T) {
 	s, dir, alice, _, conv := tier1Fixture(t)
 
-	if _, err := s.AppendMessage(conv.ID, alice.ID, "cmid-1", "settled"); err != nil {
+	if _, err := s.AppendMessage(conv.ID, alice.ID, "cmid-1", "settled", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -95,7 +95,7 @@ func TestIdempotencyRebuildAfterCrash(t *testing.T) {
 	defer s2.Close()
 
 	// The client retries the send that never got acked.
-	m, err := s2.AppendMessage(conv.ID, alice.ID, "cmid-orphan", "orphaned by crash")
+	m, err := s2.AppendMessage(conv.ID, alice.ID, "cmid-orphan", "orphaned by crash", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestReadStateConcurrent(t *testing.T) {
 func TestListMessagesAfter(t *testing.T) {
 	s, _, alice, _, conv := tier1Fixture(t)
 	for i := 1; i <= 30; i++ {
-		if _, err := s.AppendMessage(conv.ID, alice.ID, "", fmt.Sprintf("m%d", i)); err != nil {
+		if _, err := s.AppendMessage(conv.ID, alice.ID, "", fmt.Sprintf("m%d", i), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -221,7 +221,7 @@ func TestDevices(t *testing.T) {
 func TestPruneClientMsgs(t *testing.T) {
 	s, _, alice, _, conv := tier1Fixture(t)
 
-	if _, err := s.AppendMessage(conv.ID, alice.ID, "cmid-fresh", "recent"); err != nil {
+	if _, err := s.AppendMessage(conv.ID, alice.ID, "cmid-fresh", "recent", nil); err != nil {
 		t.Fatal(err)
 	}
 	// Plant an ancient entry directly.
@@ -235,7 +235,7 @@ func TestPruneClientMsgs(t *testing.T) {
 		t.Fatalf("pruned %d, err %v; want 1", n, err)
 	}
 	// Fresh entry still dedups.
-	m, err := s.AppendMessage(conv.ID, alice.ID, "cmid-fresh", "recent")
+	m, err := s.AppendMessage(conv.ID, alice.ID, "cmid-fresh", "recent", nil)
 	if err != nil || m.Seq != 1 {
 		t.Fatalf("fresh entry lost: %+v, %v", m, err)
 	}

@@ -11,18 +11,71 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"jmessage/internal/api"
 	"jmessage/internal/auth"
+	"jmessage/internal/blob"
 	"jmessage/internal/store"
 	"jmessage/internal/ws"
 )
+
+// sweepAttachments reclaims attachment garbage: uploads whose message
+// never arrived (Pending > 24h; blob first, then metadata — a crash
+// between leaves a stale record the next sweep retries), finalized
+// blobs with no metadata record (crash before CreateAttachment; the 1h
+// age guard covers uploads racing this sweep), and crashed temp files.
+func sweepAttachments(st *store.Store, blobs *blob.Store, logger *slog.Logger) {
+	stale, err := st.ListStalePendingAttachments(24 * time.Hour)
+	if err != nil {
+		logger.Warn("stale attachment scan failed", "err", err)
+	}
+	for _, a := range stale {
+		if err := blobs.Remove(a.ID); err != nil {
+			logger.Warn("blob remove failed", "id", a.ID, "err", err)
+			continue
+		}
+		if err := st.DeleteAttachment(a.ID); err != nil {
+			logger.Warn("attachment delete failed", "id", a.ID, "err", err)
+		}
+	}
+	if len(stale) > 0 {
+		logger.Info("pruned abandoned uploads", "count", len(stale))
+	}
+
+	entries, err := blobs.List()
+	if err != nil {
+		logger.Warn("blob list failed", "err", err)
+		return
+	}
+	orphans := 0
+	for _, e := range entries {
+		if time.Since(e.ModTime) < time.Hour {
+			continue
+		}
+		exists, err := st.AttachmentExists(e.ID)
+		if err != nil || exists {
+			continue
+		}
+		if blobs.Remove(e.ID) == nil {
+			orphans++
+		}
+	}
+	if orphans > 0 {
+		logger.Info("removed orphan blobs", "count", orphans)
+	}
+
+	if n, err := blobs.SweepTmp(24 * time.Hour); err == nil && n > 0 {
+		logger.Info("swept temp uploads", "count", n)
+	}
+}
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	dataDir := flag.String("data", "./data", "PetDB data directory")
 	jwtSecret := flag.String("jwt-secret", "", "JWT signing secret (or env JMESSAGE_JWT_SECRET); empty = random per-process (sessions die on restart)")
+	maxUploadMB := flag.Int("max-upload-mb", 25, "maximum attachment size in MiB")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -43,6 +96,13 @@ func main() {
 		logger.Error("open store", "err", err)
 		os.Exit(1)
 	}
+	// Attachment bytes live beside (never inside) PetDB. Safe: PetDB
+	// only scans its own data/ and wal/ subdirectories.
+	blobs, err := blob.Open(filepath.Join(*dataDir, "blobs"))
+	if err != nil {
+		logger.Error("open blob store", "err", err)
+		os.Exit(1)
+	}
 
 	tokens := auth.NewTokens([]byte(secret))
 	hub := ws.NewHub(st, logger)
@@ -54,7 +114,14 @@ func main() {
 		// Dev: the Vite proxy forwards the browser origin (localhost:5173).
 		OriginPatterns: []string{"localhost:*", "127.0.0.1:*"},
 	}
-	apiServer := &api.Server{Store: st, Tokens: tokens, Presence: hub, Logger: logger}
+	apiServer := &api.Server{
+		Store:          st,
+		Blobs:          blobs,
+		Tokens:         tokens,
+		Presence:       hub,
+		Logger:         logger,
+		MaxUploadBytes: int64(*maxUploadMB) << 20,
+	}
 
 	srv := &http.Server{Addr: *addr, Handler: apiServer.Router(wsHandler)}
 	go func() {
@@ -65,8 +132,8 @@ func main() {
 		}
 	}()
 
-	// Janitor: clientmsg idempotency entries only matter within a
-	// client's retry window; prune weekly-old ones hourly.
+	// Janitor (hourly): stale idempotency entries, abandoned uploads,
+	// orphan blobs, and crashed temp files.
 	janitorStop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(time.Hour)
@@ -79,6 +146,7 @@ func main() {
 				} else if n > 0 {
 					logger.Info("pruned clientmsg entries", "count", n)
 				}
+				sweepAttachments(st, blobs, logger)
 			case <-janitorStop:
 				return
 			}

@@ -95,7 +95,7 @@ export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: 
               onRetry={ws.retry}
             />
             <Composer
-              onSend={(body) => ws.sendMessage(current.id, body)}
+              onSend={(body, files) => ws.sendMessage(current.id, body, files)}
               onTyping={() => ws.sendTyping(current.id)}
             />
           </>

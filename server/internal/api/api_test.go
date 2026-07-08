@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"jmessage/internal/auth"
+	"jmessage/internal/blob"
 	"jmessage/internal/model"
 	"jmessage/internal/store"
 )
@@ -18,6 +19,7 @@ type testEnv struct {
 	t     *testing.T
 	srv   *httptest.Server
 	store *store.Store
+	blobs *blob.Store
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -27,10 +29,20 @@ func newEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	s := &Server{Store: st, Tokens: auth.NewTokens([]byte("test-secret")), Presence: NoPresence{}}
+	blobs, err := blob.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		Store:          st,
+		Blobs:          blobs,
+		Tokens:         auth.NewTokens([]byte("test-secret")),
+		Presence:       NoPresence{},
+		MaxUploadBytes: 1 << 20, // 1 MiB keeps the 413 test cheap
+	}
 	srv := httptest.NewServer(s.Router(nil))
 	t.Cleanup(srv.Close)
-	return &testEnv{t: t, srv: srv, store: st}
+	return &testEnv{t: t, srv: srv, store: st, blobs: blobs}
 }
 
 // call sends a JSON request and decodes the response into out (if non-nil).
@@ -287,7 +299,7 @@ func TestPerfSanity(t *testing.T) {
 func seedMessages(t *testing.T, e *testEnv, convID, senderID string, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		if _, err := e.store.AppendMessage(convID, senderID, "", fmt.Sprintf("message %d", i)); err != nil {
+		if _, err := e.store.AppendMessage(convID, senderID, "", fmt.Sprintf("message %d", i), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
