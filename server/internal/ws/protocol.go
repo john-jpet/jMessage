@@ -4,11 +4,17 @@
 //
 // Wire protocol: JSON frames discriminated by "type".
 //
-//	client → server:  send{tempID, convID, body} · typing{convID} · ping
+//	client → server:  send{tempID, convID, body} · typing{convID} ·
+//	                  resume{lastSeen} · read{convID, seq} ·
+//	                  delivered{convID, seq} · ping
 //	server → client:  ack{tempID, convID, seq, ts} · message{convID,
 //	                  seq, senderID, body, ts} · typing{convID, userID} ·
-//	                  presence{userID, online} · error{code, message,
+//	                  presence{userID, online} · receipt{convID, userID,
+//	                  deliveredSeq, readSeq} · error{code, message,
 //	                  tempID?} · pong
+//
+// send.tempID is the client-generated idempotency key (clientMsgID):
+// retrying a send frame acks the originally assigned seq, never a dup.
 package ws
 
 import "encoding/json"
@@ -27,17 +33,26 @@ type Frame struct {
 	TS       int64  `json:"ts,omitempty"`
 	Code     string `json:"code,omitempty"`
 	Message  string `json:"message,omitempty"`
+
+	// Tier 1 reliability fields.
+	LastSeen     map[string]uint64 `json:"lastSeen,omitempty"` // resume: convID -> last seq held
+	DeliveredSeq uint64            `json:"deliveredSeq,omitempty"`
+	ReadSeq      uint64            `json:"readSeq,omitempty"`
 }
 
 const (
-	TypeSend     = "send"
-	TypeTyping   = "typing"
-	TypePing     = "ping"
-	TypeAck      = "ack"
-	TypeMessage  = "message"
-	TypePresence = "presence"
-	TypeError    = "error"
-	TypePong     = "pong"
+	TypeSend      = "send"
+	TypeTyping    = "typing"
+	TypePing      = "ping"
+	TypeResume    = "resume"
+	TypeRead      = "read"
+	TypeDelivered = "delivered"
+	TypeAck       = "ack"
+	TypeMessage   = "message"
+	TypePresence  = "presence"
+	TypeReceipt   = "receipt"
+	TypeError     = "error"
+	TypePong      = "pong"
 )
 
 // maxBodyBytes bounds one message body (also enforced client-side).

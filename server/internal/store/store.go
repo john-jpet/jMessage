@@ -29,6 +29,7 @@ type Store struct {
 
 	regMu  sync.Mutex // serializes username check-then-put
 	convMu sync.Mutex // serializes conversation creation (DM dedup)
+	readMu sync.Mutex // serializes read-state read-modify-write
 
 	users *counter
 	convs *counter

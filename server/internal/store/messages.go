@@ -55,7 +55,22 @@ func (a *seqAllocator) get(cid string) *convSeq {
 	return cs
 }
 
+// clientMsgRef is the value of a clientmsg:<uid>:<clientMsgID> key: it
+// points a client-generated message ID at the message it produced, so a
+// retried send returns the original instead of appending a duplicate.
+type clientMsgRef struct {
+	ConvID string `json:"convID"`
+	Seq    uint64 `json:"seq"`
+	TS     int64  `json:"ts"` // creation time, used by the janitor
+}
+
 // loadLocked recovers the authoritative last seq. Caller holds cs.mu.
+//
+// The scan covers exactly the messages written after the last persisted
+// hint — and since a message's clientmsg: index entry is written before
+// the hint, any index entry lost to a crash belongs to a message inside
+// this window. Rebuilding those entries here closes the §4 duplicate
+// window: a retry after a crash always finds the index entry.
 func (a *seqAllocator) loadLocked(cid string, cs *convSeq) error {
 	var hint uint64
 	if v, err := a.db.Get(convSeqKey(cid)); err == nil {
@@ -65,19 +80,33 @@ func (a *seqAllocator) loadLocked(cid string, cs *convSeq) error {
 	}
 
 	last := hint
+	var rebuild []model.Message
 	it, err := a.db.Scan(msgKey(cid, hint+1), prefixEnd(msgPrefix(cid)))
 	if err != nil {
 		return err
 	}
-	defer it.Close()
 	for ; it.Valid(); it.Next() {
 		if seq, err := seqFromMsgKey(it.Key()); err == nil && seq > last {
 			last = seq
 		}
+		var m model.Message
+		if err := jsonUnmarshal(it.Value(), &m); err == nil && m.ClientMsgID != "" {
+			rebuild = append(rebuild, m)
+		}
 	}
-	if err := it.Err(); err != nil {
-		return err
+	scanErr := it.Err()
+	it.Close() // close before writing below
+	if scanErr != nil {
+		return scanErr
 	}
+
+	for _, m := range rebuild {
+		ref, _ := json.Marshal(clientMsgRef{ConvID: m.ConvID, Seq: m.Seq, TS: m.TS})
+		if err := a.db.Put(clientMsgKey(m.SenderID, m.ClientMsgID), ref); err != nil {
+			return err
+		}
+	}
+
 	cs.last = last
 	cs.loaded = true
 	return nil
@@ -99,7 +128,14 @@ func (s *Store) LastSeq(cid string) (uint64, error) {
 // AppendMessage durably persists a message and returns it with its
 // assigned sequence number. It returns only after the record is
 // fsync-durable in PetDB's WAL — the caller may ack the sender.
-func (s *Store) AppendMessage(cid, senderID, body string) (*model.Message, error) {
+//
+// A non-empty clientMsgID makes the call idempotent: a retry with the
+// same (sender, clientMsgID) returns the originally stored message
+// without appending. Write order: message (embeds clientMsgID) →
+// clientmsg: index → hint. The dedup check runs after loadLocked, which
+// rebuilds any index entry a crash may have dropped, so retries across
+// server restarts dedup correctly too.
+func (s *Store) AppendMessage(cid, senderID, clientMsgID, body string) (*model.Message, error) {
 	cs := s.seqs.get(cid)
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -109,17 +145,43 @@ func (s *Store) AppendMessage(cid, senderID, body string) (*model.Message, error
 		}
 	}
 
+	if clientMsgID != "" {
+		var ref clientMsgRef
+		err := s.getJSON(clientMsgKey(senderID, clientMsgID), &ref)
+		if err == nil {
+			var m model.Message
+			if err := s.getJSON(msgKey(ref.ConvID, ref.Seq), &m); err != nil {
+				return nil, err
+			}
+			return &m, nil // duplicate send: return the original
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+
 	msg := &model.Message{
-		ConvID:   cid,
-		Seq:      cs.last + 1,
-		SenderID: senderID,
-		Body:     body,
-		TS:       time.Now().UnixMilli(),
+		ConvID:      cid,
+		Seq:         cs.last + 1,
+		SenderID:    senderID,
+		Body:        body,
+		TS:          time.Now().UnixMilli(),
+		ClientMsgID: clientMsgID,
 	}
 	if err := s.putJSON(msgKey(cid, msg.Seq), msg); err != nil {
 		return nil, err // last not advanced: the seq will be reused
 	}
 	cs.last = msg.Seq
+
+	if clientMsgID != "" {
+		ref := clientMsgRef{ConvID: cid, Seq: msg.Seq, TS: msg.TS}
+		if err := s.putJSON(clientMsgKey(senderID, clientMsgID), &ref); err != nil {
+			// Message is durable; a lost index entry is rebuilt on the
+			// next allocator load (hint below is not yet written).
+			s.logger.Warn("clientmsg index write failed", "conv", cid, "err", err)
+			return msg, nil
+		}
+	}
 
 	// Best-effort metadata; failures don't invalidate the message.
 	if err := s.db.Put(convSeqKey(cid), []byte(pad14(msg.Seq))); err != nil {

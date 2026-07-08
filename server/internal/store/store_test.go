@@ -127,7 +127,7 @@ func TestGroupAndListConversations(t *testing.T) {
 	}
 
 	// Activity ordering: message in the group makes it newest.
-	if _, err := s.AppendMessage(g.ID, a.ID, "hello team"); err != nil {
+	if _, err := s.AppendMessage(g.ID, a.ID, "", "hello team"); err != nil {
 		t.Fatal(err)
 	}
 	convs, err := s.ListUserConversations(a.ID)
@@ -162,7 +162,7 @@ func TestDenseSequencesUnderConcurrency(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < per; i++ {
-				m, err := s.AppendMessage(conv.ID, a.ID, fmt.Sprintf("w%d-%d", w, i))
+				m, err := s.AppendMessage(conv.ID, a.ID, "", fmt.Sprintf("w%d-%d", w, i))
 				if err != nil {
 					panic(err)
 				}
@@ -198,7 +198,7 @@ func TestSeqRecoveryAfterCrashBeforeHint(t *testing.T) {
 	b, _ := s.CreateUser("b", "B", "h")
 	conv, _ := s.CreateConversation(model.ConvDM, "", a.ID, []string{b.ID})
 	for i := 0; i < 5; i++ {
-		if _, err := s.AppendMessage(conv.ID, a.ID, fmt.Sprintf("m%d", i)); err != nil {
+		if _, err := s.AppendMessage(conv.ID, a.ID, "", fmt.Sprintf("m%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -214,7 +214,7 @@ func TestSeqRecoveryAfterCrashBeforeHint(t *testing.T) {
 
 	s2 := open(t, dir)
 	defer s2.Close()
-	m, err := s2.AppendMessage(conv.ID, a.ID, "after recovery")
+	m, err := s2.AppendMessage(conv.ID, a.ID, "", "after recovery")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestPaginationBoundaries(t *testing.T) {
 	conv, _ := s.CreateConversation(model.ConvDM, "", a.ID, []string{b.ID})
 	const total = 105
 	for i := 1; i <= total; i++ {
-		if _, err := s.AppendMessage(conv.ID, a.ID, fmt.Sprintf("msg-%d", i)); err != nil {
+		if _, err := s.AppendMessage(conv.ID, a.ID, "", fmt.Sprintf("msg-%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -293,7 +293,7 @@ func TestReopenPreservesEverything(t *testing.T) {
 	b, _ := s.CreateUser("b", "B", "h")
 	conv, _ := s.CreateConversation(model.ConvDM, "", a.ID, []string{b.ID})
 	for i := 0; i < 20; i++ {
-		s.AppendMessage(conv.ID, a.ID, fmt.Sprintf("m%d", i))
+		s.AppendMessage(conv.ID, a.ID, "", fmt.Sprintf("m%d", i))
 	}
 	s.Close()
 

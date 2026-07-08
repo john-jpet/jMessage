@@ -287,7 +287,7 @@ func TestPerfSanity(t *testing.T) {
 func seedMessages(t *testing.T, e *testEnv, convID, senderID string, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		if _, err := e.store.AppendMessage(convID, senderID, fmt.Sprintf("message %d", i)); err != nil {
+		if _, err := e.store.AppendMessage(convID, senderID, "", fmt.Sprintf("message %d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}

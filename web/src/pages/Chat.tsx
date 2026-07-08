@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, clearSession } from "../api/client";
 import type { Conversation, UserSummary } from "../api/types";
+import { ensureLocalOwner } from "../db/local";
 import { useWebSocket } from "../ws/useWebSocket";
 import ConversationList from "../components/ConversationList";
 import MessagePane from "../components/MessagePane";
@@ -12,6 +13,11 @@ export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: 
   const [selected, setSelected] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const ws = useWebSocket(self.id);
+
+  // Wipe the local cache if a different account was here before.
+  useEffect(() => {
+    void ensureLocalOwner(self.id);
+  }, [self.id]);
 
   const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
@@ -82,8 +88,10 @@ export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: 
             <MessagePane
               convID={current.id}
               selfID={self.id}
-              pending={ws.pending.get(current.id) ?? []}
+              peerID={current.peerID}
               typing={ws.typing.get(current.id) ?? new Set()}
+              liveReceipts={ws.receipts.get(current.id) ?? new Map()}
+              onRead={(seq) => ws.sendRead(current.id, seq)}
               onRetry={ws.retry}
             />
             <Composer

@@ -44,37 +44,64 @@ Then open the browser URL Vite prints (usually `http://localhost:5173`).
 ## Architecture
 
 ```
-React (Vite/TS/Tailwind/TanStack Query)
-         ↓ HTTP+WebSocket (proxied by Vite)
-   Go server (chi + coder/websocket)
+React (Vite/TS/Tailwind/TanStack Query + Dexie/IndexedDB local store)
+         ↓ HTTP + WebSocket (proxied by Vite)
+   Go server (chi + coder/websocket)  ← sync engine, receipt fanout
          ↓ Typed repositories
-   PetDB (LSM, forward-only, no transactions)
-```
-
-## Architecture
-
-```
-React (Vite/TS/Tailwind/TanStack Query) ──HTTP+WS──► Go server ──► PetDB
+   PetDB (LSM, forward-only, no transactions) — source of truth
 ```
 
 ## Scope
 
-**Included (MVP):** user registration and login, 1:1 DMs and group chats,
-real-time messaging, message history, presence (online/offline), typing
-indicators.
+**MVP:** user registration and login, 1:1 DMs and group chats, real-time
+messaging, message history, presence (online/offline), typing indicators.
+
+**Tier 1 (Reliability & Synchronization):** offline sending with an
+IndexedDB outbox that survives page refreshes, idempotent delivery
+(retries can never duplicate), automatic catch-up sync after reconnect,
+WebSocket resume for small gaps, delivery + read receipts (✓/✓✓), unread
+counts, multi-device support with a device registry.
 
 **Excluded (by design):** file attachments, reactions, full-text search,
-read receipts, message edit/delete, push notifications, encryption.
+message edit/delete, push notifications, encryption.
 
 ## Server packages (`server/internal/`)
 
 | Package | Role |
 |---|---|
-| `store` | Typed repositories: key schema, crash-tolerant ID counters (hint+recover), message sequence allocator (dense seqs guarantee no gaps) |
+| `store` | Typed repositories: key schema, crash-tolerant ID counters (hint+recover), idempotent message append, read/delivered watermarks, sync scans, device registry, janitor |
 | `auth` | Argon2id (PHC-encoded strings), JWT HS256 tokens, Bearer middleware |
-| `api` | chi REST: register/login/me, conversations, members, paginated history |
-| `ws` | WebSocket hub: connection fanout, presence transitions, typing relay, heartbeats |
-| `model` | User, Conversation, Message records + API DTOs |
+| `api` | chi REST: register/login/me, conversations, members, paginated history, `/api/sync`, receipts |
+| `ws` | WebSocket hub: connection fanout, presence transitions, typing relay, resume replay, receipt fanout, heartbeats |
+| `model` | User, Conversation, Message, ReadState, Device records + API DTOs |
+
+## Tier 1: how reliability works
+
+**Exactly-once logical delivery** = at-least-once transport + dedup at
+both ends. Every send carries a client-generated UUID (`tempID`). The
+server stores it in a `clientmsg:<uid>:<id>` index — a retried send
+(lost ack, reconnect, crash) returns the originally assigned sequence
+instead of appending. The crash window (message written, index write
+lost) is closed by the allocator's recovery scan, which rebuilds index
+entries from the `clientMsgID` embedded in each message doc. The client
+side dedups for free: IndexedDB's `[convID+seq]` primary key collapses
+replay and sync overlaps.
+
+**Offline support:** outgoing messages are written to a persistent
+IndexedDB outbox *before* any network attempt, so they survive refreshes
+and offline periods. On reconnect the outbox flushes FIFO with one send
+in flight at a time — the server assigns sequences in client order.
+
+**Catch-up:** on every (re)connect the client sends `resume{lastSeen}`
+over the socket (small gaps replay inline) and calls `POST /api/sync`
+(authoritative: returns missing messages per conversation plus whole
+conversations created while offline).
+
+**Receipts:** one watermark record per (user, conversation) —
+`read:<uid>:<cid>` = `{deliveredSeq, readSeq}`, monotonic — instead of a
+key per (message, user). A message is delivered/read by a peer iff their
+watermark ≥ its seq; unread count is `lastSeq − readSeq`. Watermark
+changes fan out as `receipt` frames; REST hydrates on conversation open.
 
 ## Design principles: working without transactions
 

@@ -48,12 +48,14 @@ func (s *Server) Router(wsHandler http.Handler) http.Handler {
 		r.Use(s.Tokens.Middleware)
 		r.Get("/api/me", s.handleMe)
 		r.Get("/api/users/lookup", s.handleUserLookup)
+		r.Post("/api/sync", s.handleSync)
 		r.Get("/api/conversations", s.handleListConversations)
 		r.Post("/api/conversations", s.handleCreateConversation)
 		r.Get("/api/conversations/{id}", s.handleGetConversation)
 		r.Get("/api/conversations/{id}/members", s.handleListMembers)
 		r.Post("/api/conversations/{id}/members", s.handleAddMember)
 		r.Get("/api/conversations/{id}/messages", s.handleHistory)
+		r.Get("/api/conversations/{id}/receipts", s.handleReceipts)
 	})
 
 	if wsHandler != nil {

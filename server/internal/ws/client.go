@@ -6,20 +6,27 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"jmessage/internal/auth"
+	"jmessage/internal/model"
 	"jmessage/internal/store"
 )
 
 const (
-	outboundBuffer = 64
+	outboundBuffer = 256 // sized to absorb a resume replay burst
 	readTimeout    = 60 * time.Second // any frame (incl. app ping) resets it
 	pingInterval   = 30 * time.Second
 	writeTimeout   = 10 * time.Second
+
+	// resumeReplayCap bounds the per-conversation gap the resume fast
+	// path will replay inline. Larger gaps are skipped here — the
+	// client's POST /api/sync is the authoritative catch-up.
+	resumeReplayCap = 50
 )
 
 // Handler upgrades /ws?token= requests and runs clients against the hub.
@@ -31,6 +38,10 @@ type Handler struct {
 	OriginPatterns []string // e.g. ["localhost:*"] for dev behind the Vite proxy
 }
 
+// deviceRE validates client-supplied device IDs before they land in a
+// PetDB key.
+var deviceRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Browsers cannot set headers on WebSocket dials, so the token rides
 	// the query string (MVP tradeoff: may appear in access logs).
@@ -39,6 +50,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
+
+	deviceID := r.URL.Query().Get("device")
+	if !deviceRE.MatchString(deviceID) {
+		deviceID = "" // unregistered connection; fanout still works
+	}
+	if deviceID != "" {
+		name := r.Header.Get("User-Agent")
+		if len(name) > 80 {
+			name = name[:80]
+		}
+		if err := h.Store.UpsertDevice(uid, deviceID, name); err != nil {
+			h.Logger.Warn("device upsert failed", "user", uid, "err", err)
+		}
+	}
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: h.OriginPatterns,
 	})
@@ -48,22 +74,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(64 << 10)
 
 	c := &Client{
-		UserID: uid,
-		conn:   conn,
-		out:    make(chan []byte, outboundBuffer),
-		hub:    h.Hub,
-		store:  h.Store,
-		logger: h.Logger,
-		done:   make(chan struct{}),
+		UserID:   uid,
+		DeviceID: deviceID,
+		conn:     conn,
+		out:      make(chan []byte, outboundBuffer),
+		hub:      h.Hub,
+		store:    h.Store,
+		logger:   h.Logger,
+		done:     make(chan struct{}),
 	}
 	h.Hub.register(c)
-	defer h.Hub.unregister(c)
+	defer func() {
+		h.Hub.unregister(c)
+		if deviceID != "" {
+			h.Store.TouchDevice(uid, deviceID)
+		}
+	}()
 	c.run(r.Context())
 }
 
 // Client is one WebSocket connection of one authenticated user.
 type Client struct {
-	UserID string
+	UserID   string
+	DeviceID string
 
 	conn   *websocket.Conn
 	out    chan []byte
@@ -164,6 +197,12 @@ func (c *Client) dispatch(f Frame) {
 		if ok, err := c.store.IsMember(f.ConvID, c.UserID); err == nil && ok {
 			c.hub.relayTyping(c, f.ConvID)
 		}
+	case TypeResume:
+		c.handleResume(f)
+	case TypeRead:
+		c.handleWatermark(f, true)
+	case TypeDelivered:
+		c.handleWatermark(f, false)
 	case TypePing:
 		c.trySend(encode(Frame{Type: TypePong}))
 	case "":
@@ -173,6 +212,60 @@ func (c *Client) dispatch(f Frame) {
 	}
 }
 
+// handleResume replays small per-conversation gaps as regular message
+// frames. The connection is already registered live (register precedes
+// the read loop), so a concurrent send can arrive twice — never be
+// missed; the client dedups by (convID, seq). Gaps larger than
+// resumeReplayCap are left to the client's REST sync.
+func (c *Client) handleResume(f Frame) {
+	for cid, lastSeen := range f.LastSeen {
+		if ok, err := c.store.IsMember(cid, c.UserID); err != nil || !ok {
+			continue
+		}
+		msgs, hasMore, err := c.store.ListMessagesAfter(cid, lastSeen, resumeReplayCap)
+		if err != nil || hasMore {
+			continue // REST sync covers big gaps
+		}
+		for _, m := range msgs {
+			c.trySend(encode(Frame{
+				Type: TypeMessage, ConvID: m.ConvID, Seq: m.Seq,
+				SenderID: m.SenderID, Body: m.Body, TS: m.TS,
+			}))
+		}
+	}
+}
+
+// handleWatermark raises the sender's read or delivered watermark and,
+// on change, fans a receipt to the conversation's online members —
+// including the user's own other devices (cross-device unread sync),
+// excluding the originating connection.
+func (c *Client) handleWatermark(f Frame, read bool) {
+	if ok, err := c.store.IsMember(f.ConvID, c.UserID); err != nil || !ok {
+		return
+	}
+	var (
+		rs      = model.ReadState{}
+		changed bool
+		err     error
+	)
+	if read {
+		rs, changed, err = c.store.SetRead(c.UserID, f.ConvID, f.Seq)
+	} else {
+		rs, changed, err = c.store.SetDelivered(c.UserID, f.ConvID, f.Seq)
+	}
+	if err != nil || !changed {
+		return
+	}
+	members, err := c.store.ListMembers(f.ConvID)
+	if err != nil {
+		return
+	}
+	c.hub.sendToUsers(members, c, encode(Frame{
+		Type: TypeReceipt, ConvID: f.ConvID, UserID: c.UserID,
+		DeliveredSeq: rs.DeliveredSeq, ReadSeq: rs.ReadSeq,
+	}))
+}
+
 // handleSend is the persisted-then-acked path: membership check →
 // durable AppendMessage → ack the sending connection → fan out to the
 // conversation's online members (the sender's other devices included,
@@ -180,6 +273,10 @@ func (c *Client) dispatch(f Frame) {
 func (c *Client) handleSend(f Frame) {
 	if f.Body == "" || len(f.Body) > maxBodyBytes {
 		c.trySend(errorFrame("too_large", "message body empty or too large", f.TempID))
+		return
+	}
+	if len(f.TempID) > 64 { // it becomes part of a PetDB key
+		c.trySend(errorFrame("bad_frame", "tempID too long", ""))
 		return
 	}
 	ok, err := c.store.IsMember(f.ConvID, c.UserID)
@@ -192,7 +289,9 @@ func (c *Client) handleSend(f Frame) {
 		return
 	}
 
-	msg, err := c.store.AppendMessage(f.ConvID, c.UserID, f.Body)
+	// tempID doubles as the durable idempotency key: a retried frame
+	// (lost ack, reconnect replay) acks the original seq, never a dup.
+	msg, err := c.store.AppendMessage(f.ConvID, c.UserID, f.TempID, f.Body)
 	if err != nil {
 		c.logger.Error("append message", "conv", f.ConvID, "err", err)
 		c.trySend(errorFrame("internal", "message could not be persisted", f.TempID))

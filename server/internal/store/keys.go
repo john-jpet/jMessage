@@ -19,6 +19,9 @@ import (
 //	message:<cid>:<seq>            message timeline (dense seqs)
 //	convseq:<cid>                  last-seq hint for the allocator
 //	counter:user, counter:conv     global ID hints
+//	clientmsg:<uid>:<clientMsgID>  send idempotency -> {convID, seq, ts}
+//	read:<uid>:<cid>               delivered/read watermarks
+//	device:<uid>:<deviceID>        device registry
 
 func pad10(n uint64) string { return fmt.Sprintf("%010d", n) }
 func pad14(n uint64) string { return fmt.Sprintf("%014d", n) }
@@ -43,6 +46,17 @@ func dmKey(a, b string) []byte {
 func msgKey(cid string, seq uint64) []byte { return []byte("message:" + cid + ":" + pad14(seq)) }
 func msgPrefix(cid string) []byte          { return []byte("message:" + cid + ":") }
 func convSeqKey(cid string) []byte         { return []byte("convseq:" + cid) }
+
+func clientMsgKey(uid, clientMsgID string) []byte {
+	return []byte("clientmsg:" + uid + ":" + clientMsgID)
+}
+
+const clientMsgPrefix = "clientmsg:"
+
+func readStateKey(uid, cid string) []byte { return []byte("read:" + uid + ":" + cid) }
+
+func deviceKey(uid, deviceID string) []byte { return []byte("device:" + uid + ":" + deviceID) }
+func devicePrefix(uid string) []byte        { return []byte("device:" + uid + ":") }
 
 // prefixEnd returns the exclusive upper bound for a prefix scan: the
 // prefix with its last byte incremented. All key bytes here are ASCII,

@@ -51,10 +51,29 @@ type Member struct {
 }
 
 // Message is the stored message record (value of message:<cid>:<seq>).
+// ClientMsgID is embedded so the clientmsg: idempotency index can be
+// rebuilt from message docs during allocator recovery.
 type Message struct {
-	ConvID   string `json:"convID"`
-	Seq      uint64 `json:"seq"`
-	SenderID string `json:"senderID"`
-	Body     string `json:"body"`
-	TS       int64  `json:"ts"` // unix ms
+	ConvID      string `json:"convID"`
+	Seq         uint64 `json:"seq"`
+	SenderID    string `json:"senderID"`
+	Body        string `json:"body"`
+	TS          int64  `json:"ts"` // unix ms
+	ClientMsgID string `json:"clientMsgID,omitempty"`
+}
+
+// ReadState is the per-(user, conversation) watermark record (value of
+// read:<uid>:<cid>). Both sequences are monotonic: a message with
+// seq <= DeliveredSeq has reached at least one of the user's devices;
+// seq <= ReadSeq has been seen.
+type ReadState struct {
+	DeliveredSeq uint64 `json:"deliveredSeq"`
+	ReadSeq      uint64 `json:"readSeq"`
+}
+
+// Device is a registered client device (value of device:<uid>:<deviceID>).
+type Device struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	LastSeen int64  `json:"lastSeen"` // unix ms
 }

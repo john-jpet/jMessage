@@ -65,11 +65,32 @@ func main() {
 		}
 	}()
 
+	// Janitor: clientmsg idempotency entries only matter within a
+	// client's retry window; prune weekly-old ones hourly.
+	janitorStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if n, err := st.PruneClientMsgs(7 * 24 * time.Hour); err != nil {
+					logger.Warn("clientmsg prune failed", "err", err)
+				} else if n > 0 {
+					logger.Info("pruned clientmsg entries", "count", n)
+				}
+			case <-janitorStop:
+				return
+			}
+		}
+	}()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 	<-stop
 
 	logger.Info("shutting down")
+	close(janitorStop)
 	hub.CloseAll()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

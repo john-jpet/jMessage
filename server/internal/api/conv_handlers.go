@@ -18,6 +18,9 @@ type convResponse struct {
 	PeerName    string `json:"peerName,omitempty"`    // dm only
 	PeerOnline  bool   `json:"peerOnline,omitempty"`  // dm only
 	DisplayName string `json:"displayName,omitempty"` // list-friendly title
+	LastSeq     uint64 `json:"lastSeq"`               // conversation tip
+	MyReadSeq   uint64 `json:"myReadSeq"`             // viewer's read watermark
+	Unread      uint64 `json:"unread"`                // lastSeq - myReadSeq
 }
 
 // requireMember loads the conversation and verifies the caller belongs
@@ -42,7 +45,8 @@ func (s *Server) requireMember(w http.ResponseWriter, r *http.Request) (*model.C
 	return conv, uid, true
 }
 
-// decorate fills viewer-relative fields (DM peer name/presence, title).
+// decorate fills viewer-relative fields (DM peer name/presence, title,
+// unread count from the viewer's read watermark).
 func (s *Server) decorate(conv model.Conversation, viewerID string) convResponse {
 	out := convResponse{Conversation: conv, DisplayName: conv.Name}
 	members, err := s.Store.ListMembers(conv.ID)
@@ -58,6 +62,15 @@ func (s *Server) decorate(conv model.Conversation, viewerID string) convResponse
 					out.DisplayName = peer.DisplayName
 				}
 				out.PeerOnline = s.Presence.IsOnline(uid)
+			}
+		}
+	}
+	if last, err := s.Store.LastSeq(conv.ID); err == nil {
+		out.LastSeq = last
+		if rs, err := s.Store.GetReadState(viewerID, conv.ID); err == nil {
+			out.MyReadSeq = rs.ReadSeq
+			if last > rs.ReadSeq {
+				out.Unread = last - rs.ReadSeq
 			}
 		}
 	}

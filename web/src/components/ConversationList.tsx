@@ -35,7 +35,12 @@ export default function ConversationList({ conversations, selected, onSelect, pr
               <span className="truncate font-medium text-slate-800">
                 {c.displayName || c.name || "Conversation"}
               </span>
-              {c.type === "group" && (
+              {c.unread > 0 && (
+                <span className="ml-auto shrink-0 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  {c.unread > 99 ? "99+" : c.unread}
+                </span>
+              )}
+              {c.type === "group" && c.unread === 0 && (
                 <span className="ml-auto shrink-0 text-xs text-slate-400">{c.memberCount}</span>
               )}
             </div>

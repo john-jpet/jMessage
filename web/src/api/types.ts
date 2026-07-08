@@ -19,6 +19,26 @@ export interface Conversation {
   peerName?: string;
   peerOnline?: boolean;
   displayName?: string;
+  lastSeq: number;
+  myReadSeq: number;
+  unread: number;
+}
+
+/** Per-user delivery/read watermarks in a conversation. */
+export interface ReadState {
+  deliveredSeq: number;
+  readSeq: number;
+}
+
+export interface Receipt extends ReadState {
+  userID: string;
+}
+
+export interface SyncChange {
+  conversation: Conversation;
+  messages: Message[];
+  hasMore: boolean;
+  latestSeq: number;
 }
 
 export interface Message {
@@ -42,7 +62,19 @@ export interface Session {
 
 /** WebSocket frames (both directions). */
 export interface Frame {
-  type: "send" | "typing" | "ping" | "ack" | "message" | "presence" | "error" | "pong";
+  type:
+    | "send"
+    | "typing"
+    | "ping"
+    | "resume"
+    | "read"
+    | "delivered"
+    | "ack"
+    | "message"
+    | "presence"
+    | "receipt"
+    | "error"
+    | "pong";
   tempID?: string;
   convID?: string;
   seq?: number;
@@ -53,4 +85,7 @@ export interface Frame {
   ts?: number;
   code?: string;
   message?: string;
+  lastSeen?: Record<string, number>;
+  deliveredSeq?: number;
+  readSeq?: number;
 }
