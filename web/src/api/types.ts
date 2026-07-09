@@ -18,6 +18,7 @@ export interface Conversation {
   peerID?: string;
   peerName?: string;
   peerOnline?: boolean;
+  peerLastSeen?: number;
   displayName?: string;
   lastSeq: number;
   myReadSeq: number;

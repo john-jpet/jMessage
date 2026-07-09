@@ -1,1 +1,64 @@
 @import "tailwindcss";
+
+/* Dark mode is a root class (settings-driven), not the media query. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. --color-accent* are runtime-overridable from Settings;
+   Tailwind emits accent utilities (bg-accent, text-accent, …) that read
+   these vars, so changing them recolors the whole app instantly. */
+@theme {
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --radius-bubble: 0.75rem;
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+}
+
+/* Font scaling: rem-based Tailwind sizing means one root variable
+   scales the entire interface. */
+:root {
+  --font-scale: 1;
+}
+html {
+  font-size: calc(16px * var(--font-scale));
+}
+
+/* Keyboard-first: an unmistakable focus ring, only for keyboard focus. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Reduced motion: kill transitions/animations app-wide. */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* High contrast: darken muted text and strengthen borders. These win
+   over the utilities by specificity. */
+.high-contrast .text-slate-400 { color: var(--color-slate-600); }
+.high-contrast .text-slate-500 { color: var(--color-slate-700); }
+.high-contrast .border-slate-200 { border-color: var(--color-slate-400); }
+.high-contrast.dark .text-slate-400,
+.high-contrast.dark .text-slate-500 { color: var(--color-slate-200); }
+.high-contrast.dark .border-slate-700 { border-color: var(--color-slate-500); }
+
+/* Subtle shared animations (disabled by .reduce-motion). */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-fade-in {
+  animation: fade-in var(--duration-normal) ease-out;
+}
+@keyframes pulse-soft {
+  50% { opacity: 0.45; }
+}
+.animate-pulse-soft {
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}

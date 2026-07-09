@@ -14,9 +14,10 @@ import (
 type convResponse struct {
 	model.Conversation
 	MemberCount int    `json:"memberCount"`
-	PeerID      string `json:"peerID,omitempty"`      // dm only
-	PeerName    string `json:"peerName,omitempty"`    // dm only
-	PeerOnline  bool   `json:"peerOnline,omitempty"`  // dm only
+	PeerID       string `json:"peerID,omitempty"`       // dm only
+	PeerName     string `json:"peerName,omitempty"`     // dm only
+	PeerOnline   bool   `json:"peerOnline,omitempty"`   // dm only
+	PeerLastSeen int64  `json:"peerLastSeen,omitempty"` // dm only, unix ms
 	DisplayName string `json:"displayName,omitempty"` // list-friendly title
 	LastSeq     uint64 `json:"lastSeq"`               // conversation tip
 	MyReadSeq   uint64 `json:"myReadSeq"`             // viewer's read watermark
@@ -62,6 +63,9 @@ func (s *Server) decorate(conv model.Conversation, viewerID string) convResponse
 					out.DisplayName = peer.DisplayName
 				}
 				out.PeerOnline = s.Presence.IsOnline(uid)
+				if last, err := s.Store.LastSeen(uid); err == nil {
+					out.PeerLastSeen = last
+				}
 			}
 		}
 	}

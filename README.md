@@ -69,9 +69,21 @@ atomic rename), membership-authorized downloads with range support,
 offline attachment composition (the file itself survives a page refresh
 in IndexedDB), and a janitor for abandoned uploads and orphan blobs.
 
+**Tier 3 (Product Polish):** production-quality UX — dark/light/system
+themes with configurable accent colors, message grouping with date
+separators and timestamp rules, per-conversation scroll memory,
+generated avatars, sidebar typing indicators and relative timestamps,
+keyboard-first navigation (Ctrl+K quick switcher, Ctrl+/ shortcut help,
+Escape everywhere), auto-growing composer with drag-and-drop and
+paste-image support, user profiles (join date, last seen, shared
+conversations), skeleton loading, intentional empty states, an offline
+banner, sound/desktop notifications, accessibility settings (font
+scaling, reduced motion, high contrast), and a responsive mobile layout.
+
 **Excluded (by design):** reactions, full-text search, message
 edit/delete, push notifications, encryption, video transcoding,
-thumbnails, resumable uploads.
+thumbnails, resumable uploads, developer dashboard / PetDB observability
+(separate future project).
 
 ## Server packages (`server/internal/`)
 

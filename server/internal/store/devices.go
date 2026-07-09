@@ -26,6 +26,22 @@ func (s *Store) TouchDevice(uid, deviceID string) error {
 	return s.putJSON(deviceKey(uid, deviceID), &d)
 }
 
+// LastSeen returns the most recent device activity for a user (0 if
+// the user has never connected a registered device).
+func (s *Store) LastSeen(uid string) (int64, error) {
+	devs, err := s.ListDevices(uid)
+	if err != nil {
+		return 0, err
+	}
+	var last int64
+	for _, d := range devs {
+		if d.LastSeen > last {
+			last = d.LastSeen
+		}
+	}
+	return last, nil
+}
+
 // ListDevices returns a user's registered devices.
 func (s *Store) ListDevices(uid string) ([]model.Device, error) {
 	prefix := devicePrefix(uid)

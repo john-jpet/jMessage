@@ -51,6 +51,7 @@ func (s *Server) Router(wsHandler http.Handler) http.Handler {
 		r.Use(s.Tokens.Middleware)
 		r.Get("/api/me", s.handleMe)
 		r.Get("/api/users/lookup", s.handleUserLookup)
+		r.Get("/api/users/{id}/profile", s.handleProfile)
 		r.Post("/api/sync", s.handleSync)
 		r.Get("/api/conversations", s.handleListConversations)
 		r.Post("/api/conversations", s.handleCreateConversation)

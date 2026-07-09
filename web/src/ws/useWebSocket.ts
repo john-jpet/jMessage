@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, getToken, uploadBlob } from "../api/client";
-import type { Frame, Message, ReadState, SyncChange } from "../api/types";
+import type { Conversation, Frame, Message, ReadState, SyncChange } from "../api/types";
 import { db, deviceID, lastSeenMap, storeMessage, storeMessages } from "../db/local";
+import { notifyMessage } from "../lib/notify";
 
 export interface WsApi {
   connected: boolean;
@@ -32,7 +33,12 @@ const ACK_TIMEOUT_MS = 10_000;
  *    authoritative catch-up, then flush. All paths are idempotent via
  *    the [convID+seq] primary key in IndexedDB.
  */
-export function useWebSocket(selfID: string): WsApi {
+export function useWebSocket(
+  selfID: string,
+  /** Which conversation is on screen — incoming messages elsewhere (or
+   *  while the window is hidden) trigger sound/desktop notifications. */
+  activeConvRef?: { readonly current: string | null },
+): WsApi {
   const queryClient = useQueryClient();
   const [connected, setConnected] = useState(false);
   const [typing, setTyping] = useState<Map<string, Set<string>>>(new Map());
@@ -84,6 +90,17 @@ export function useWebSocket(selfID: string): WsApi {
           wsSend({ type: "delivered", convID: msg.convID, seq: msg.seq });
           queryClient.invalidateQueries({ queryKey: ["conversations"] });
           clearTypingFor(msg.convID, msg.senderID);
+          // Notify for messages outside the active conversation (or a
+          // hidden window); never for your own other devices.
+          if (
+            msg.senderID !== selfID &&
+            (msg.convID !== activeConvRef?.current || document.hidden)
+          ) {
+            const convs = queryClient.getQueryData<Conversation[]>(["conversations"]);
+            const conv = convs?.find((c) => c.id === msg.convID);
+            const title = conv?.displayName || conv?.name || "New message";
+            notifyMessage(title, msg.body || `📎 ${msg.attachments?.[0]?.filename ?? "attachment"}`);
+          }
           break;
         }
         case "ack": {
@@ -152,7 +169,7 @@ export function useWebSocket(selfID: string): WsApi {
         }
       }
     },
-    [queryClient, selfID, clearTypingFor, wsSend],
+    [queryClient, selfID, clearTypingFor, wsSend, activeConvRef],
   );
 
   /** transmit sends one outbox row and resolves on ack (false on error
