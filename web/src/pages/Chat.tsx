@@ -12,12 +12,19 @@ import Composer from "../components/Composer";
 import NewConversationDialog from "../components/NewConversationDialog";
 import ProfileDialog from "../components/ProfileDialog";
 import QuickSwitcher from "../components/QuickSwitcher";
-import SettingsDialog from "../components/SettingsDialog";
 import ShortcutHelp from "../components/ShortcutHelp";
 
-export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: () => void }) {
+export default function Chat({
+  self,
+  onLogout,
+  onOpenSettings,
+}: {
+  self: UserSummary;
+  onLogout: () => void;
+  onOpenSettings: () => void;
+}) {
   const [selected, setSelected] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"new" | "settings" | "switcher" | "shortcuts" | null>(null);
+  const [dialog, setDialog] = useState<"new" | "switcher" | "shortcuts" | null>(null);
   const [profileUser, setProfileUser] = useState<string | null>(null);
   const [draftFiles, setDraftFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -117,14 +124,19 @@ export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: 
               className="flex items-center gap-2 rounded"
               aria-label="Your profile"
             >
-              <Avatar id={self.id} name={self.displayName} online={ws.connected} />
+              <Avatar
+                id={self.id}
+                name={self.displayName}
+                online={ws.connected}
+                avatarID={self.avatarID}
+              />
               <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                 {self.displayName}
               </span>
             </button>
             <span className="flex items-center gap-1">
               <button
-                onClick={() => setDialog("settings")}
+                onClick={onOpenSettings}
                 aria-label="Settings"
                 title="Settings"
                 className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
@@ -190,19 +202,22 @@ export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: 
                     id={current.type === "dm" ? (current.peerID ?? current.id) : current.id}
                     name={current.displayName || current.name || "Conversation"}
                     online={current.type === "dm" ? !!peerOnline : undefined}
+                    avatarID={current.type === "dm" ? current.peerAvatarID : undefined}
                   />
                   <span className="min-w-0">
                     <span className="block truncate font-semibold text-slate-800 dark:text-slate-100">
                       {current.displayName || current.name || "Conversation"}
                     </span>
-                    <span className="block text-xs text-slate-400">
+                    <span className="block truncate text-xs text-slate-400">
                       {current.type === "group"
                         ? `${current.memberCount} members`
                         : (ws.typing.get(current.id)?.size ?? 0) > 0
                           ? "typing…"
-                          : peerOnline
-                            ? "online"
-                            : lastSeenLabel(current.peerLastSeen ?? 0)}
+                          : current.peerStatus
+                            ? current.peerStatus
+                            : peerOnline
+                              ? "online"
+                              : lastSeenLabel(current.peerLastSeen ?? 0)}
                     </span>
                   </span>
                 </button>
@@ -216,6 +231,7 @@ export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: 
                 onRead={(seq) => ws.sendRead(current.id, seq)}
                 onRetry={ws.retry}
                 onOpenProfile={setProfileUser}
+                onReact={(seq, emoji, add) => ws.sendReaction(current.id, seq, emoji, add)}
               />
               <Composer
                 files={draftFiles}
@@ -258,7 +274,6 @@ export default function Chat({ self, onLogout }: { self: UserSummary; onLogout: 
           }}
         />
       )}
-      {dialog === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
       {dialog === "shortcuts" && <ShortcutHelp onClose={() => setDialog(null)} />}
       {dialog === "switcher" && (
         <QuickSwitcher

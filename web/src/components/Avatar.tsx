@@ -1,13 +1,16 @@
+import { attachmentURL } from "../api/client";
+
 interface Props {
   id: string; // stable identity (userID or convID) drives the color
   name: string;
   size?: "sm" | "md" | "lg";
   online?: boolean; // undefined = no presence dot at all
+  avatarID?: string; // uploaded profile picture; falls back to initials
 }
 
-/** Avatar renders deterministic initials on a hue derived from the ID —
- *  no uploads, no network, always consistent across sessions/devices. */
-export default function Avatar({ id, name, size = "md", online }: Props) {
+/** Avatar renders the uploaded profile picture when one exists, else
+ *  deterministic initials on a hue derived from the ID. */
+export default function Avatar({ id, name, size = "md", online, avatarID }: Props) {
   const hue = hashHue(id);
   const initials = name
     .split(/\s+/)
@@ -20,12 +23,20 @@ export default function Avatar({ id, name, size = "md", online }: Props) {
 
   return (
     <span className="relative inline-block shrink-0" aria-hidden="true">
-      <span
-        className={`flex ${dims} items-center justify-center rounded-full font-semibold text-white`}
-        style={{ backgroundColor: `hsl(${hue} 55% 48%)` }}
-      >
-        {initials || "?"}
-      </span>
+      {avatarID ? (
+        <img
+          src={attachmentURL(avatarID)}
+          alt=""
+          className={`${dims} rounded-full object-cover`}
+        />
+      ) : (
+        <span
+          className={`flex ${dims} items-center justify-center rounded-full font-semibold text-white`}
+          style={{ backgroundColor: `hsl(${hue} 55% 48%)` }}
+        >
+          {initials || "?"}
+        </span>
+      )}
       {online !== undefined && (
         <span
           className={`absolute -bottom-0.5 -right-0.5 ${dot} rounded-full border-2 border-white dark:border-slate-900 ${

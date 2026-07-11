@@ -63,6 +63,21 @@ func attachmentKey(id string) []byte { return []byte("attachment:" + id) }
 
 const attachmentPrefix = "attachment:"
 
+// Reactions: reaction:<cid>:<seq14>:<emoji>:<uid> -> {}. Fixed-width
+// cid/seq keep all of one conversation's reactions in one seq-ordered
+// range, so a history page aggregates with a single scan.
+func reactionKey(cid string, seq uint64, emoji, uid string) []byte {
+	return []byte("reaction:" + cid + ":" + pad14(seq) + ":" + emoji + ":" + uid)
+}
+
+func reactionEmojiPrefix(cid string, seq uint64, emoji string) []byte {
+	return []byte("reaction:" + cid + ":" + pad14(seq) + ":" + emoji + ":")
+}
+
+func reactionSeqPrefix(cid string, seq uint64) []byte {
+	return []byte("reaction:" + cid + ":" + pad14(seq) + ":")
+}
+
 // prefixEnd returns the exclusive upper bound for a prefix scan: the
 // prefix with its last byte incremented. All key bytes here are ASCII,
 // so overflow is impossible.

@@ -56,6 +56,10 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			storeErr(w, err)
 			return
 		}
+		if err := s.Store.AttachReactions(conv.ID, msgs, uid); err != nil {
+			storeErr(w, err)
+			return
+		}
 		latest, err := s.Store.LastSeq(conv.ID)
 		if err != nil {
 			storeErr(w, err)

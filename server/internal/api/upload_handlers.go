@@ -10,10 +10,14 @@ import (
 
 	"jmessage/internal/auth"
 	"jmessage/internal/model"
+	"jmessage/internal/validation"
 )
 
 // DefaultMaxUploadBytes bounds one attachment (overridable via Server).
-const DefaultMaxUploadBytes = 25 << 20
+const DefaultMaxUploadBytes = validation.AttachmentMaxBytes
+
+// uploadReadTimeout aborts stalled upload streams.
+const uploadReadTimeout = 60 * time.Second
 
 // handleUpload accepts the raw file as the request body (single
 // streaming request: no multipart, no separate begin/commit round
@@ -28,6 +32,16 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if max <= 0 {
 		max = DefaultMaxUploadBytes
 	}
+	// Declared-size fast path: reject before reading a single byte.
+	if r.ContentLength > max {
+		writeErr(w, http.StatusRequestEntityTooLarge, "attachment exceeds size limit")
+		return
+	}
+	// Stalled-stream guard: the whole body must arrive within the window.
+	rc := http.NewResponseController(w)
+	rc.SetReadDeadline(time.Now().Add(uploadReadTimeout))
+	defer rc.SetReadDeadline(time.Time{})
+
 	body := http.MaxBytesReader(w, r.Body, max)
 
 	res, err := s.Blobs.Save(body, r.Header.Get("Content-Type"))
@@ -101,6 +115,8 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		allowed = ok
 	case model.AttachmentPending:
 		allowed = att.OwnerID == uid
+	case model.AttachmentAvatar:
+		allowed = true // avatars are visible to any authenticated user
 	}
 	if !allowed {
 		writeErr(w, http.StatusForbidden, "not authorized for this attachment")

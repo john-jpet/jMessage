@@ -143,6 +143,21 @@ func (h *Hub) relayTyping(from *Client, convID string) {
 	h.sendToUsers(members, from, encode(Frame{Type: TypeTyping, ConvID: convID, UserID: from.UserID}))
 }
 
+// NotifyReaction fans a reaction change to every member's connections —
+// no exclusions: the origin client also renders the server's count.
+// Implements api.ReactionNotifier for REST-initiated reactions.
+func (h *Hub) NotifyReaction(convID string, seq uint64, emoji, userID string, count int, added bool) {
+	members, err := h.store.ListMembers(convID)
+	if err != nil {
+		return
+	}
+	c := count
+	h.sendToUsers(members, nil, encode(Frame{
+		Type: TypeReactionUpdate, ConvID: convID, Seq: seq,
+		Emoji: emoji, UserID: userID, Count: &c, Added: added,
+	}))
+}
+
 // CloseAll disconnects every client (used for graceful shutdown).
 func (h *Hub) CloseAll() {
 	h.mu.Lock()

@@ -2,7 +2,20 @@ export interface UserSummary {
   id: string;
   username: string;
   displayName: string;
+  status?: string;
+  avatarID?: string;
   online?: boolean;
+}
+
+/** Raw settings-page view of the caller's own profile (displayName may
+ *  be empty here even though summaries fall back to the username). */
+export interface SettingsProfile {
+  id: string;
+  username: string;
+  displayName: string;
+  status: string;
+  avatarID: string;
+  createdAt: number;
 }
 
 export interface Conversation {
@@ -19,6 +32,8 @@ export interface Conversation {
   peerName?: string;
   peerOnline?: boolean;
   peerLastSeen?: number;
+  peerAvatarID?: string;
+  peerStatus?: string;
   displayName?: string;
   lastSeq: number;
   myReadSeq: number;
@@ -50,6 +65,13 @@ export interface AttachmentRef {
   size: number;
 }
 
+/** One emoji's aggregate on a message (reacted = this viewer). */
+export interface ReactionAgg {
+  emoji: string;
+  count: number;
+  reacted?: boolean;
+}
+
 export interface Message {
   convID: string;
   seq: number;
@@ -57,6 +79,7 @@ export interface Message {
   body: string;
   ts: number;
   attachments?: AttachmentRef[];
+  reactions?: ReactionAgg[];
 }
 
 export interface HistoryPage {
@@ -84,7 +107,10 @@ export interface Frame {
     | "presence"
     | "receipt"
     | "error"
-    | "pong";
+    | "pong"
+    | "reaction_add"
+    | "reaction_remove"
+    | "reaction_update";
   tempID?: string;
   convID?: string;
   seq?: number;
@@ -100,4 +126,7 @@ export interface Frame {
   readSeq?: number;
   attachmentIDs?: string[]; // client → server on send
   attachments?: AttachmentRef[]; // server → client on ack/message
+  emoji?: string;
+  count?: number;
+  added?: boolean;
 }

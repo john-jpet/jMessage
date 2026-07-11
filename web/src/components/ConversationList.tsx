@@ -64,6 +64,7 @@ export default function ConversationList({
             key={c.id}
             onClick={() => onSelect(c.id)}
             aria-current={active ? "true" : undefined}
+            title={c.peerStatus || undefined}
             className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
               active
                 ? "bg-accent/10 dark:bg-accent/20"
@@ -74,6 +75,7 @@ export default function ConversationList({
               id={c.type === "dm" ? (c.peerID ?? c.id) : c.id}
               name={name}
               online={c.type === "dm" ? !!online : undefined}
+              avatarID={c.type === "dm" ? c.peerAvatarID : undefined}
             />
             <span className="min-w-0 flex-1">
               <span className="flex items-baseline justify-between gap-2">

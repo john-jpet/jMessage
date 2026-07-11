@@ -10,16 +10,18 @@ interface Props {
 }
 
 const MAX_FILES = 10;
-const MAX_BODY_BYTES = 8 * 1024; // mirrors the server's frame limit
-const COUNTER_THRESHOLD = MAX_BODY_BYTES - 1500;
+const MAX_BODY_CHARS = 2000; // mirrors internal/validation on the server
+const COUNTER_THRESHOLD = 1800;
+const MAX_FILE_BYTES = 10 << 20; // 10 MB — rejected before any upload
 
 export default function Composer({ files, onFilesChange, onSend, onTyping, focusKey }: Props) {
   const [text, setText] = useState("");
+  const [fileError, setFileError] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const bodyBytes = new TextEncoder().encode(text).length;
-  const tooLong = bodyBytes > MAX_BODY_BYTES;
+  const charCount = [...text].length; // code points, matching the server
+  const tooLong = charCount > MAX_BODY_CHARS;
   const canSend = (text.trim().length > 0 || files.length > 0) && !tooLong;
 
   // Refocus on conversation switch — typing should never need a click.
@@ -53,7 +55,15 @@ export default function Composer({ files, onFilesChange, onSend, onTyping, focus
 
   function addFiles(list: FileList | File[] | null) {
     if (!list) return;
-    onFilesChange([...files, ...Array.from(list)].slice(0, MAX_FILES));
+    const incoming = Array.from(list);
+    const oversized = incoming.filter((f) => f.size > MAX_FILE_BYTES);
+    const ok = incoming.filter((f) => f.size <= MAX_FILE_BYTES);
+    setFileError(
+      oversized.length > 0
+        ? `${oversized.map((f) => f.name).join(", ")} exceed${oversized.length === 1 ? "s" : ""} the 10 MB limit and won't be attached.`
+        : "",
+    );
+    if (ok.length > 0) onFilesChange([...files, ...ok].slice(0, MAX_FILES));
   }
 
   // Paste image support: screenshots land straight in the composer.
@@ -67,6 +77,11 @@ export default function Composer({ files, onFilesChange, onSend, onTyping, focus
 
   return (
     <div className="border-t border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
+      {fileError && (
+        <p className="mb-2 text-xs text-red-600 dark:text-red-400" role="alert">
+          {fileError}
+        </p>
+      )}
       {files.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
           {files.map((f, i) => (
@@ -120,14 +135,14 @@ export default function Composer({ files, onFilesChange, onSend, onTyping, focus
             onKeyDown={onKeyDown}
             onPaste={onPaste}
           />
-          {bodyBytes > COUNTER_THRESHOLD && (
+          {charCount > COUNTER_THRESHOLD && (
             <span
               className={`absolute -top-5 right-1 text-[10px] ${
                 tooLong ? "font-semibold text-red-600" : "text-slate-400"
               }`}
               role="status"
             >
-              {bodyBytes} / {MAX_BODY_BYTES}
+              {charCount} / {MAX_BODY_CHARS}
             </span>
           )}
         </div>

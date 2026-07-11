@@ -7,7 +7,9 @@ package model
 type User struct {
 	ID           string `json:"id"`
 	Username     string `json:"username"`
-	DisplayName  string `json:"displayName"`
+	DisplayName  string `json:"displayName"` // optional: empty shows username
+	Status       string `json:"status,omitempty"`
+	AvatarID     string `json:"avatarID,omitempty"` // attachment in state "avatar"
 	PasswordHash string `json:"passwordHash"`
 	CreatedAt    int64  `json:"createdAt"` // unix ms
 }
@@ -17,11 +19,27 @@ type UserSummary struct {
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
+	Status      string `json:"status,omitempty"`
+	AvatarID    string `json:"avatarID,omitempty"`
 	Online      bool   `json:"online,omitempty"`
 }
 
+// Name is the presentation name: display name when set, else username.
+func (u *User) Name() string {
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	return u.Username
+}
+
 func (u *User) Summary() UserSummary {
-	return UserSummary{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName}
+	return UserSummary{
+		ID:          u.ID,
+		Username:    u.Username,
+		DisplayName: u.Name(),
+		Status:      u.Status,
+		AvatarID:    u.AvatarID,
+	}
 }
 
 // Conversation types.
@@ -53,7 +71,10 @@ type Member struct {
 // Message is the stored message record (value of message:<cid>:<seq>).
 // ClientMsgID is embedded so the clientmsg: idempotency index can be
 // rebuilt from message docs during allocator recovery. Attachments hold
-// render metadata only — blob bytes never live in PetDB.
+// render metadata only — blob bytes never live in PetDB. Reactions are
+// NEVER persisted here: the field is populated at response time from
+// the reaction: keyspace (message docs are written before any reaction
+// can exist).
 type Message struct {
 	ConvID      string          `json:"convID"`
 	Seq         uint64          `json:"seq"`
@@ -62,12 +83,22 @@ type Message struct {
 	TS          int64           `json:"ts"` // unix ms
 	ClientMsgID string          `json:"clientMsgID,omitempty"`
 	Attachments []AttachmentRef `json:"attachments,omitempty"`
+	Reactions   []ReactionAgg   `json:"reactions,omitempty"`
+}
+
+// ReactionAgg is one emoji's aggregate on a message, viewer-relative
+// (Reacted reflects the requesting user).
+type ReactionAgg struct {
+	Emoji   string `json:"emoji"`
+	Count   int    `json:"count"`
+	Reacted bool   `json:"reacted,omitempty"`
 }
 
 // Attachment lifecycle states.
 const (
 	AttachmentPending   = "pending"   // uploaded, not yet referenced by a message
 	AttachmentCommitted = "committed" // referenced by a message in ConvID
+	AttachmentAvatar    = "avatar"    // referenced by its owner's profile
 	AttachmentDeleted   = "deleted"
 )
 

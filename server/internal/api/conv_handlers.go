@@ -8,6 +8,7 @@ import (
 
 	"jmessage/internal/auth"
 	"jmessage/internal/model"
+	"jmessage/internal/validation"
 )
 
 // convResponse decorates conversation metadata with per-viewer fields.
@@ -18,6 +19,8 @@ type convResponse struct {
 	PeerName     string `json:"peerName,omitempty"`     // dm only
 	PeerOnline   bool   `json:"peerOnline,omitempty"`   // dm only
 	PeerLastSeen int64  `json:"peerLastSeen,omitempty"` // dm only, unix ms
+	PeerAvatarID string `json:"peerAvatarID,omitempty"` // dm only
+	PeerStatus   string `json:"peerStatus,omitempty"`   // dm only
 	DisplayName string `json:"displayName,omitempty"` // list-friendly title
 	LastSeq     uint64 `json:"lastSeq"`               // conversation tip
 	MyReadSeq   uint64 `json:"myReadSeq"`             // viewer's read watermark
@@ -59,8 +62,10 @@ func (s *Server) decorate(conv model.Conversation, viewerID string) convResponse
 			if uid != viewerID {
 				out.PeerID = uid
 				if peer, err := s.Store.GetUser(uid); err == nil {
-					out.PeerName = peer.DisplayName
-					out.DisplayName = peer.DisplayName
+					out.PeerName = peer.Name()
+					out.DisplayName = peer.Name()
+					out.PeerAvatarID = peer.AvatarID
+					out.PeerStatus = peer.Status
 				}
 				out.PeerOnline = s.Presence.IsOnline(uid)
 				if last, err := s.Store.LastSeen(uid); err == nil {
@@ -105,9 +110,13 @@ func (s *Server) handleCreateConversation(w http.ResponseWriter, r *http.Request
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if req.Type == model.ConvGroup && req.Name == "" {
-		writeErr(w, http.StatusBadRequest, "group conversations need a name")
-		return
+	if req.Type == model.ConvGroup {
+		name, err := validation.GroupName(req.Name)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, userMsg(err))
+			return
+		}
+		req.Name = name
 	}
 	for _, pid := range req.ParticipantIDs {
 		if _, err := s.Store.GetUser(pid); err != nil {
@@ -173,7 +182,7 @@ func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	conv, _, ok := s.requireMember(w, r)
+	conv, uid, ok := s.requireMember(w, r)
 	if !ok {
 		return
 	}
@@ -181,6 +190,10 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	msgs, hasMore, err := s.Store.ListMessagesBefore(conv.ID, before, limit)
 	if err != nil {
+		storeErr(w, err)
+		return
+	}
+	if err := s.Store.AttachReactions(conv.ID, msgs, uid); err != nil {
 		storeErr(w, err)
 		return
 	}

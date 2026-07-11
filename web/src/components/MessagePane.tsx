@@ -11,6 +11,7 @@ import type {
   UserSummary,
 } from "../api/types";
 import { db, storeMessages, type LocalAttachment } from "../db/local";
+import { REACTION_EMOJIS } from "../lib/emojis";
 import { clockTime, dayLabel, isSameDay } from "../lib/time";
 import Avatar from "./Avatar";
 import { formatSize } from "./Composer";
@@ -24,6 +25,7 @@ interface Props {
   onRead: (seq: number) => void;
   onRetry: (tempID: string) => void;
   onOpenProfile: (userID: string) => void;
+  onReact: (seq: number, emoji: string, add: boolean) => void;
 }
 
 /** Messages closer together than this share one sender block. */
@@ -42,11 +44,33 @@ export default function MessagePane({
   onRead,
   onRetry,
   onOpenProfile,
+  onReact,
 }: Props) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const tailRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const prevHeightRef = useRef(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [pickerSeq, setPickerSeq] = useState<number | null>(null);
+
+  // "Engaged" = the user can actually see the messages: visible tab AND
+  // focused window. Read receipts must never fire without it.
+  const [engaged, setEngaged] = useState(
+    () => document.visibilityState === "visible" && document.hasFocus(),
+  );
+  const [tailVisible, setTailVisible] = useState(false);
+  useEffect(() => {
+    const update = () =>
+      setEngaged(document.visibilityState === "visible" && document.hasFocus());
+    window.addEventListener("focus", update);
+    window.addEventListener("blur", update);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      window.removeEventListener("focus", update);
+      window.removeEventListener("blur", update);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, []);
 
   // undefined = IndexedDB still answering (skeletons); [] = truly empty.
   const messagesRaw = useLiveQuery(
@@ -126,6 +150,17 @@ export default function MessagePane({
     }
   }, [messages.length, outbox.length]);
 
+  // Refresh the newest page on open: reactions change without new
+  // messages, so "caught-up" sync skips them — the history response
+  // (which embeds viewer-relative aggregates) re-trues the local rows.
+  useEffect(() => {
+    void api<HistoryPage>("GET", `/api/conversations/${convID}/messages?limit=50`)
+      .then((page) => storeMessages(convID, page.messages))
+      .catch(() => {
+        /* offline: the local cache stands */
+      });
+  }, [convID]);
+
   // Restore the remembered position when switching conversations
   // (bottom for first-time opens).
   useLayoutEffect(() => {
@@ -141,11 +176,29 @@ export default function MessagePane({
     }
   }, [convID, initialLoading]);
 
-  // Report the read position (throttled inside the hook).
+  // The newest message must actually enter the viewport before it can
+  // count as read.
   const tailSeq = messages.length > 0 ? messages[messages.length - 1].seq : 0;
   useEffect(() => {
-    if (tailSeq > 0) onRead(tailSeq);
-  }, [tailSeq, onRead]);
+    const el = tailRef.current;
+    if (!el) {
+      setTailVisible(false);
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => setTailVisible(entries[0]?.isIntersecting ?? false),
+      { root: scrollerRef.current, threshold: 0.5 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [tailSeq, convID, initialLoading]);
+
+  // Read reporting: engaged + newest message on screen (batched 250 ms
+  // in the hook). Hiding the tab flips `engaged` and pauses instantly;
+  // regaining focus re-fires because the effect re-runs.
+  useEffect(() => {
+    if (tailSeq > 0 && engaged && tailVisible) onRead(tailSeq);
+  }, [tailSeq, onRead, engaged, tailVisible]);
 
   if (initialLoading) {
     return (
@@ -186,7 +239,7 @@ export default function MessagePane({
           newDay || !prev || prev.senderID !== m.senderID || m.ts - prev.ts > GROUP_WINDOW_MS;
         const mine = m.senderID === selfID;
         return (
-          <div key={m.seq}>
+          <div key={m.seq} ref={i === messages.length - 1 ? tailRef : undefined}>
             {newDay && <DaySeparator ts={m.ts} />}
             <MessageRow
               msg={m}
@@ -195,6 +248,9 @@ export default function MessagePane({
               senderName={nameOf(m.senderID)}
               ticks={mine ? tickState(m.seq, peerState) : undefined}
               onOpenProfile={onOpenProfile}
+              onReact={onReact}
+              pickerOpen={pickerSeq === m.seq}
+              onTogglePicker={() => setPickerSeq((s) => (s === m.seq ? null : m.seq))}
             />
           </div>
         );
@@ -236,6 +292,9 @@ function MessageRow({
   senderName,
   ticks,
   onOpenProfile,
+  onReact,
+  pickerOpen,
+  onTogglePicker,
 }: {
   msg: Message;
   mine: boolean;
@@ -243,9 +302,15 @@ function MessageRow({
   senderName: string;
   ticks?: Ticks;
   onOpenProfile: (userID: string) => void;
+  onReact: (seq: number, emoji: string, add: boolean) => void;
+  pickerOpen: boolean;
+  onTogglePicker: () => void;
 }) {
+  const reactedSet = new Set(msg.reactions?.filter((a) => a.reacted).map((a) => a.emoji));
   return (
-    <div className={`flex gap-2 ${groupHead ? "mt-2.5" : "mt-0.5"} ${mine ? "justify-end" : ""}`}>
+    <div
+      className={`group flex gap-2 ${groupHead ? "mt-2.5" : "mt-0.5"} ${mine ? "justify-end" : ""}`}
+    >
       {!mine && (
         <span className="w-7 shrink-0">
           {groupHead && (
@@ -271,14 +336,72 @@ function MessageRow({
             <span className="text-[10px] text-slate-400">{clockTime(msg.ts)}</span>
           </p>
         )}
-        <div
-          className={`rounded-[var(--radius-bubble)] px-3 py-1.5 text-sm animate-fade-in ${
-            mine ? "bg-accent text-white" : "bg-white text-slate-800 shadow-sm dark:bg-slate-800 dark:text-slate-100"
-          }`}
-        >
-          <Attachments atts={msg.attachments} mine={mine} />
-          {msg.body && <p className="whitespace-pre-wrap break-words">{msg.body}</p>}
+        <div className={`relative flex items-center gap-1 ${mine ? "flex-row-reverse" : ""}`}>
+          <div
+            className={`rounded-[var(--radius-bubble)] px-3 py-1.5 text-sm animate-fade-in ${
+              mine ? "bg-accent text-white" : "bg-white text-slate-800 shadow-sm dark:bg-slate-800 dark:text-slate-100"
+            }`}
+          >
+            <Attachments atts={msg.attachments} mine={mine} />
+            {msg.body && <p className="whitespace-pre-wrap break-words">{msg.body}</p>}
+          </div>
+          {/* Hover-revealed reaction affordance (focus keeps it keyboard-usable). */}
+          <button
+            onClick={onTogglePicker}
+            aria-label="Add reaction"
+            className="rounded-full p-0.5 text-sm opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100"
+          >
+            😊
+          </button>
+          {pickerOpen && (
+            <div
+              className={`absolute -top-9 z-20 flex gap-1 rounded-full bg-white px-2 py-1 shadow-lg animate-fade-in dark:bg-slate-700 ${
+                mine ? "right-0" : "left-0"
+              }`}
+              role="menu"
+              aria-label="Pick a reaction"
+            >
+              {REACTION_EMOJIS.map((e) => (
+                <button
+                  key={e}
+                  role="menuitem"
+                  onClick={() => {
+                    onReact(msg.seq, e, !reactedSet.has(e));
+                    onTogglePicker();
+                  }}
+                  className={`rounded-full px-1 text-base transition-transform hover:scale-125 ${
+                    reactedSet.has(e) ? "bg-accent/20" : ""
+                  }`}
+                >
+                  {e}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+        {msg.reactions && msg.reactions.length > 0 && (
+          <div className={`mt-0.5 flex flex-wrap gap-1 ${mine ? "justify-end" : ""}`}>
+            {msg.reactions.map((a) => (
+              <button
+                key={a.emoji}
+                onClick={() => onReact(msg.seq, a.emoji, !a.reacted)}
+                aria-label={`${a.emoji} ${a.count}${a.reacted ? ", you reacted" : ""}`}
+                aria-pressed={!!a.reacted}
+                className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors ${
+                  a.reacted
+                    ? "border-accent bg-accent/15 text-accent"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                }`}
+              >
+                {a.emoji}
+                {/* keyed by count so changes re-trigger the pulse */}
+                <span key={a.count} className="animate-fade-in font-medium">
+                  {a.count}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         {/* Fixed-height meta line: state changes never shift layout. */}
         <p className={`h-4 text-[10px] leading-4 text-slate-400 ${mine ? "text-right" : ""}`}>
           {mine && groupHead && clockTime(msg.ts)}

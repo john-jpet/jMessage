@@ -69,13 +69,29 @@ func sweepAttachments(st *store.Store, blobs *blob.Store, logger *slog.Logger) {
 	if n, err := blobs.SweepTmp(24 * time.Hour); err == nil && n > 0 {
 		logger.Info("swept temp uploads", "count", n)
 	}
+
+	// Avatar replacements reclaim the old attachment inline; this covers
+	// the crash window between claiming a new avatar and the user-doc
+	// update.
+	avatarOrphans, err := st.ListOrphanAvatarAttachments(time.Hour)
+	if err != nil {
+		logger.Warn("avatar orphan scan failed", "err", err)
+	}
+	for _, a := range avatarOrphans {
+		if blobs.Remove(a.ID) == nil {
+			st.DeleteAttachment(a.ID)
+		}
+	}
+	if len(avatarOrphans) > 0 {
+		logger.Info("pruned orphan avatars", "count", len(avatarOrphans))
+	}
 }
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	dataDir := flag.String("data", "./data", "PetDB data directory")
 	jwtSecret := flag.String("jwt-secret", "", "JWT signing secret (or env JMESSAGE_JWT_SECRET); empty = random per-process (sessions die on restart)")
-	maxUploadMB := flag.Int("max-upload-mb", 25, "maximum attachment size in MiB")
+	maxUploadMB := flag.Int("max-upload-mb", 10, "maximum attachment size in MiB")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -119,6 +135,7 @@ func main() {
 		Blobs:          blobs,
 		Tokens:         tokens,
 		Presence:       hub,
+		Reactions:      hub,
 		Logger:         logger,
 		MaxUploadBytes: int64(*maxUploadMB) << 20,
 	}

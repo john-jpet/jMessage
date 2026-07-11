@@ -47,10 +47,21 @@ export default function ProfileDialog({ userID, livePresence, onOpenConversation
         ) : (
           <>
             <div className="flex flex-col items-center gap-2 text-center">
-              <Avatar id={data.user.id} name={data.user.displayName} size="lg" online={online} />
+              <Avatar
+                id={data.user.id}
+                name={data.user.displayName}
+                size="lg"
+                online={online}
+                avatarID={data.user.avatarID}
+              />
               <div>
                 <p className="font-semibold">{data.user.displayName}</p>
                 <p className="text-xs text-slate-400">@{data.user.username}</p>
+                {data.user.status && (
+                  <p className="mt-1 max-w-56 text-xs italic text-slate-500 dark:text-slate-400">
+                    “{data.user.status}”
+                  </p>
+                )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {online ? (

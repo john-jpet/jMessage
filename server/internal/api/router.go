@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -34,6 +35,7 @@ type Server struct {
 	Blobs          *blob.Store
 	Tokens         *auth.Tokens
 	Presence       Presence
+	Reactions      ReactionNotifier // nil = no live fanout (tests)
 	Logger         *slog.Logger
 	MaxUploadBytes int64 // 0 = DefaultMaxUploadBytes
 }
@@ -52,6 +54,8 @@ func (s *Server) Router(wsHandler http.Handler) http.Handler {
 		r.Get("/api/me", s.handleMe)
 		r.Get("/api/users/lookup", s.handleUserLookup)
 		r.Get("/api/users/{id}/profile", s.handleProfile)
+		r.Get("/api/settings/profile", s.handleGetProfileSettings)
+		r.Patch("/api/settings/profile", s.handlePatchProfileSettings)
 		r.Post("/api/sync", s.handleSync)
 		r.Get("/api/conversations", s.handleListConversations)
 		r.Post("/api/conversations", s.handleCreateConversation)
@@ -59,6 +63,8 @@ func (s *Server) Router(wsHandler http.Handler) http.Handler {
 		r.Get("/api/conversations/{id}/members", s.handleListMembers)
 		r.Post("/api/conversations/{id}/members", s.handleAddMember)
 		r.Get("/api/conversations/{id}/messages", s.handleHistory)
+		r.Put("/api/conversations/{id}/messages/{seq}/reactions/{emoji}", s.handleReaction(true))
+		r.Delete("/api/conversations/{id}/messages/{seq}/reactions/{emoji}", s.handleReaction(false))
 		r.Get("/api/conversations/{id}/receipts", s.handleReceipts)
 		r.Post("/api/uploads", s.handleUpload)
 	})
@@ -81,6 +87,11 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// userMsg strips the validation sentinel prefix for API error bodies.
+func userMsg(err error) string {
+	return strings.TrimPrefix(err.Error(), "validation: ")
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {

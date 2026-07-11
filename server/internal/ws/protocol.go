@@ -47,6 +47,12 @@ type Frame struct {
 	// refs server→client on ack/message.
 	AttachmentIDs []string              `json:"attachmentIDs,omitempty"`
 	Attachments   []model.AttachmentRef `json:"attachments,omitempty"`
+
+	// Tier 4 reaction fields. Count is a pointer so zero (last removal)
+	// still serializes on reaction_update frames.
+	Emoji string `json:"emoji,omitempty"`
+	Count *int   `json:"count,omitempty"`
+	Added bool   `json:"added,omitempty"`
 }
 
 const (
@@ -62,12 +68,14 @@ const (
 	TypeReceipt   = "receipt"
 	TypeError     = "error"
 	TypePong      = "pong"
+
+	TypeReactionAdd    = "reaction_add"
+	TypeReactionRemove = "reaction_remove"
+	TypeReactionUpdate = "reaction_update"
 )
 
-// maxBodyBytes bounds one message body (also enforced client-side).
-const maxBodyBytes = 8 << 10
-
-// maxAttachments bounds attachments per message.
+// maxAttachments bounds attachments per message. Body limits live in
+// internal/validation (shared with REST).
 const maxAttachments = 10
 
 func encode(f Frame) []byte {

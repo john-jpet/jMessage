@@ -16,6 +16,7 @@ export interface WsApi {
   sendMessage: (convID: string, body: string, files?: File[]) => void;
   sendTyping: (convID: string) => void;
   sendRead: (convID: string, seq: number) => void;
+  sendReaction: (convID: string, seq: number, emoji: string, add: boolean) => void;
   retry: (tempID: string) => void;
 }
 
@@ -158,6 +159,25 @@ export function useWebSocket(
             next.set(f.convID!, conv);
             return next;
           });
+          break;
+        }
+        case "reaction_update": {
+          // Server-authoritative aggregate: rewrite the emoji's entry on
+          // the cached message row; liveQuery re-renders in place.
+          void db.messages
+            .where("[convID+seq]")
+            .equals([f.convID!, f.seq!])
+            .modify((m) => {
+              const reactions = (m.reactions ?? []).filter((a) => a.emoji !== f.emoji);
+              const mine = f.userID === selfID;
+              const existing = (m.reactions ?? []).find((a) => a.emoji === f.emoji);
+              const reacted = mine ? !!f.added : (existing?.reacted ?? false);
+              if ((f.count ?? 0) > 0) {
+                reactions.push({ emoji: f.emoji!, count: f.count ?? 0, reacted });
+                reactions.sort((a, b) => a.emoji.localeCompare(b.emoji));
+              }
+              m.reactions = reactions.length > 0 ? reactions : undefined;
+            });
           break;
         }
         case "error": {
@@ -393,6 +413,13 @@ export function useWebSocket(
     [flushOutbox],
   );
 
+  const sendReaction = useCallback(
+    (convID: string, seq: number, emoji: string, add: boolean) => {
+      wsSend({ type: add ? "reaction_add" : "reaction_remove", convID, seq, emoji });
+    },
+    [wsSend],
+  );
+
   const sendTyping = useCallback(
     (convID: string) => {
       const last = lastTypingSentRef.current.get(convID) ?? 0;
@@ -427,9 +454,10 @@ export function useWebSocket(
     (convID: string, seq: number) => {
       const cur = desiredReadRef.current.get(convID) ?? 0;
       desiredReadRef.current.set(convID, Math.max(cur, seq));
+      // 250 ms trailing-edge batching (spec: read acks batch at 250 ms).
       const prev = lastReadSentRef.current.get(convID);
       const since = Date.now() - (prev?.at ?? 0);
-      if (!prev || since >= 1000) {
+      if (!prev || since >= 250) {
         fireRead(convID);
         return;
       }
@@ -439,12 +467,22 @@ export function useWebSocket(
           window.setTimeout(() => {
             readTimerRef.current.delete(convID);
             fireRead(convID);
-          }, 1000 - since),
+          }, 250 - since),
         );
       }
     },
     [fireRead],
   );
 
-  return { connected, typing, presence, receipts, sendMessage, sendTyping, sendRead, retry };
+  return {
+    connected,
+    typing,
+    presence,
+    receipts,
+    sendMessage,
+    sendTyping,
+    sendRead,
+    sendReaction,
+    retry,
+  };
 }

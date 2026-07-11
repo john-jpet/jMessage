@@ -43,6 +43,28 @@ func (s *Store) CreateUser(username, displayName, passwordHash string) (*model.U
 	return u, nil
 }
 
+// UpdateUser applies mutate to the user record under the registration
+// mutex (read-modify-write; profile edits are rare enough that one lock
+// for all of them is fine). The username must not be changed — the
+// username index is immutable by design.
+func (s *Store) UpdateUser(uid string, mutate func(*model.User) error) (*model.User, error) {
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	u, err := s.GetUser(uid)
+	if err != nil {
+		return nil, err
+	}
+	before := u.Username
+	if err := mutate(u); err != nil {
+		return nil, err
+	}
+	u.Username = before // immutable after registration
+	if err := s.putJSON(userKey(uid), u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 // GetUser loads a user by ID.
 func (s *Store) GetUser(uid string) (*model.User, error) {
 	var u model.User

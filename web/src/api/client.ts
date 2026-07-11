@@ -17,6 +17,11 @@ export function setSession(token: string, user: UserSummary) {
   localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
+/** updateSessionUser refreshes the cached identity after profile edits. */
+export function updateSessionUser(user: UserSummary) {
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);

@@ -80,10 +80,25 @@ conversations), skeleton loading, intentional empty states, an offline
 banner, sound/desktop notifications, accessibility settings (font
 scaling, reduced motion, high contrast), and a responsive mobile layout.
 
-**Excluded (by design):** reactions, full-text search, message
-edit/delete, push notifications, encryption, video transcoding,
-thumbnails, resumable uploads, developer dashboard / PetDB observability
-(separate future project).
+**Tier 4 (Settings, Reactions & Hardening):** dedicated `/settings` page
+(browser Back works) with editable profile — display name (optional,
+username shown when empty), ≤140-char status, and profile pictures
+(client-side resize → the Tier 2 blob pipeline, attachment state
+`avatar`); emoji reactions (six-emoji set, one key per
+message/emoji/user in PetDB, scan-aggregated counts, live
+`reaction_update` fanout, REST + WS entry points); accurate read
+receipts (visible tab + focused window + newest message in the viewport
+via IntersectionObserver, 250 ms batching — an open-but-hidden
+conversation never marks read); and a centralized
+`internal/validation` package: 2000-char messages, 10 MB attachments
+with Content-Length pre-checks and read deadlines, 5 MB / 4096²
+avatars, username `[a-zA-Z0-9_]{3,32}`, UTF-8 + control-character
+rejection everywhere.
+
+**Excluded (by design):** full-text search, message edit/delete, push
+notifications, encryption, video transcoding, thumbnails, resumable
+uploads, presence modes (online/DND/invisible), developer dashboard /
+PetDB observability (separate future project).
 
 ## Server packages (`server/internal/`)
 

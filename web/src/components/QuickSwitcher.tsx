@@ -85,7 +85,12 @@ export default function QuickSwitcher({ conversations, onSelect, onClose }: Prop
                       : "text-slate-700 dark:text-slate-300"
                   }`}
                 >
-                  <Avatar id={c.type === "dm" ? (c.peerID ?? c.id) : c.id} name={name} size="sm" />
+                  <Avatar
+                    id={c.type === "dm" ? (c.peerID ?? c.id) : c.id}
+                    name={name}
+                    size="sm"
+                    avatarID={c.type === "dm" ? c.peerAvatarID : undefined}
+                  />
                   <span className="flex-1 truncate">{name}</span>
                   {c.unread > 0 && (
                     <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white">

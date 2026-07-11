@@ -2,13 +2,11 @@ package api
 
 import (
 	"net/http"
-	"regexp"
 
 	"jmessage/internal/auth"
 	"jmessage/internal/model"
+	"jmessage/internal/validation"
 )
-
-var usernameRE = regexp.MustCompile(`^[a-zA-Z0-9_.-]{2,32}$`)
 
 type credentials struct {
 	Username    string `json:"username"`
@@ -26,16 +24,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if !usernameRE.MatchString(req.Username) {
-		writeErr(w, http.StatusBadRequest, "username must be 2-32 chars of letters, digits, _ . -")
+	username, err := validation.Username(req.Username)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, userMsg(err))
 		return
 	}
+	req.Username = username
+	// Display name is optional; empty means the username is shown.
+	displayName, err := validation.DisplayName(req.DisplayName)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, userMsg(err))
+		return
+	}
+	req.DisplayName = displayName
 	if len(req.Password) < 8 {
 		writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
-	}
-	if req.DisplayName == "" {
-		req.DisplayName = req.Username
 	}
 
 	hash, err := auth.HashPassword(req.Password)

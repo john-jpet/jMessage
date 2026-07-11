@@ -15,6 +15,7 @@ import (
 	"jmessage/internal/auth"
 	"jmessage/internal/model"
 	"jmessage/internal/store"
+	"jmessage/internal/validation"
 )
 
 const (
@@ -203,6 +204,10 @@ func (c *Client) dispatch(f Frame) {
 		c.handleWatermark(f, true)
 	case TypeDelivered:
 		c.handleWatermark(f, false)
+	case TypeReactionAdd:
+		c.handleReaction(f, true)
+	case TypeReactionRemove:
+		c.handleReaction(f, false)
 	case TypePing:
 		c.trySend(encode(Frame{Type: TypePong}))
 	case "":
@@ -234,6 +239,34 @@ func (c *Client) handleResume(f Frame) {
 			}))
 		}
 	}
+}
+
+// handleReaction toggles an emoji reaction and fans the authoritative
+// count to every member (including the originating connection — the
+// server owns the truth, clients render what they're told).
+func (c *Client) handleReaction(f Frame, add bool) {
+	if err := validation.Emoji(f.Emoji); err != nil {
+		c.trySend(errorFrame("bad_reaction", err.Error(), ""))
+		return
+	}
+	if ok, err := c.store.IsMember(f.ConvID, c.UserID); err != nil || !ok {
+		c.trySend(errorFrame("not_member", "not a member of this conversation", ""))
+		return
+	}
+	var (
+		count int
+		err   error
+	)
+	if add {
+		count, err = c.store.AddReaction(f.ConvID, f.Seq, f.Emoji, c.UserID)
+	} else {
+		count, err = c.store.RemoveReaction(f.ConvID, f.Seq, f.Emoji, c.UserID)
+	}
+	if err != nil {
+		c.trySend(errorFrame("bad_reaction", "message not found", ""))
+		return
+	}
+	c.hub.NotifyReaction(f.ConvID, f.Seq, f.Emoji, c.UserID, count, add)
 }
 
 // handleWatermark raises the sender's read or delivered watermark and,
@@ -272,9 +305,10 @@ func (c *Client) handleWatermark(f Frame, read bool) {
 // conversation's online members (the sender's other devices included,
 // this connection excluded).
 func (c *Client) handleSend(f Frame) {
-	// A message needs a body or at least one attachment.
-	if (f.Body == "" && len(f.AttachmentIDs) == 0) || len(f.Body) > maxBodyBytes {
-		c.trySend(errorFrame("too_large", "message body empty or too large", f.TempID))
+	// Centralized rules: ≤2000 chars, valid UTF-8, empty allowed only
+	// with attachments.
+	if err := validation.MessageBody(f.Body, len(f.AttachmentIDs) > 0); err != nil {
+		c.trySend(errorFrame("invalid_message", err.Error(), f.TempID))
 		return
 	}
 	if len(f.AttachmentIDs) > maxAttachments {
