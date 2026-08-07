@@ -40,7 +40,7 @@ func newEnv(t *testing.T) *testEnv {
 		Presence:       NoPresence{},
 		MaxUploadBytes: 1 << 20, // 1 MiB keeps the 413 test cheap
 	}
-	srv := httptest.NewServer(s.Router(nil))
+	srv := httptest.NewServer(s.Router(nil, nil))
 	t.Cleanup(srv.Close)
 	return &testEnv{t: t, srv: srv, store: st, blobs: blobs}
 }

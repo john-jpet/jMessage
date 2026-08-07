@@ -10,6 +10,11 @@ web/dist/
 web/.env.local
 web/.env.*.local
 
+# Embedded frontend copy (populated by the Docker build; keep only the
+# .gitkeep placeholder so `go build` works without it)
+server/internal/webui/dist/*
+!server/internal/webui/dist/.gitkeep
+
 # IDE & editor
 .vscode/
 .idea/

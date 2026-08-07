@@ -3,7 +3,8 @@ package api
 import (
 	"errors"
 	"net/http"
-	"path/filepath"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -61,14 +62,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize the client-supplied filename: base name only, bounded.
-	filename := filepath.Base(r.Header.Get("X-Filename"))
-	if filename == "." || filename == string(filepath.Separator) || filename == "" {
-		filename = "file"
-	}
-	if len(filename) > 120 {
-		filename = filename[len(filename)-120:]
-	}
+	filename := sanitizeFilename(r.Header.Get("X-Filename"))
 
 	att := &model.Attachment{
 		ID:        res.ID,
@@ -158,6 +152,23 @@ func isInlineMime(mime string) bool {
 		return true
 	}
 	return false
+}
+
+// sanitizeFilename reduces a client-supplied filename to its base name,
+// bounded to 120 bytes. path.Base only recognizes "/", so both
+// separators are normalized first — path/filepath.Base is OS-dependent
+// (it only splits on "\" when GOOS is windows) and would let a
+// Windows-style traversal path through unchanged on a Linux server.
+func sanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = path.Base(name)
+	if name == "." || name == "/" || name == "" {
+		name = "file"
+	}
+	if len(name) > 120 {
+		name = name[len(name)-120:]
+	}
+	return name
 }
 
 // sanitizeHeaderName strips characters that would break the

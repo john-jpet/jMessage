@@ -1,7 +1,7 @@
 # jMessage
 
 A real-time messaging platform whose **only** persistent store is
-[PetDB](../PetDB), an embedded LSM key-value engine. No PostgreSQL, no
+[PetDB](PetDB), an embedded LSM key-value engine. No PostgreSQL, no
 Redis — every user, conversation, and message lives in PetDB, which
 demonstrates a purpose-built storage engine powering a production-grade
 application.
@@ -17,6 +17,7 @@ only after durability, not before.
 
 **One-time setup:**
 ```powershell
+git submodule update --init  # fetches PetDB (server/go.mod replace ../PetDB)
 cd web && npm install
 ```
 
@@ -50,6 +51,57 @@ React (Vite/TS/Tailwind/TanStack Query + Dexie/IndexedDB local store)
          ↓ Typed repositories
    PetDB (LSM, forward-only, no transactions) — source of truth
 ```
+
+## Deployment
+
+The server is a single binary. It embeds the built frontend
+(`web/dist`, copied into `server/internal/webui/dist` at build time —
+see `Dockerfile`) via `go:embed`, so one process serves the SPA, the
+REST API, and the WebSocket hub on one origin. No reverse-proxy
+stitching is required in production the way the Vite dev proxy does
+locally.
+
+**Build and run with Docker:**
+```sh
+docker build -t jmessage .
+docker run -p 8080:8080 \
+  -v jmessage-data:/data \
+  -e JMESSAGE_JWT_SECRET="$(openssl rand -hex 32)" \
+  -e JMESSAGE_WS_ORIGINS="app.example.com" \
+  jmessage
+```
+
+**Required production configuration** (flags or env vars — env vars
+are read only when the corresponding flag is left unset):
+
+| Setting | Flag | Env var | Notes |
+|---|---|---|---|
+| JWT signing secret | `-jwt-secret` | `JMESSAGE_JWT_SECRET` | **Set this.** Left unset, the server generates a random secret per process and logs a warning — every restart invalidates all sessions. |
+| WebSocket allowed origins | `-ws-origins` | `JMESSAGE_WS_ORIGINS` | Comma-separated (`coder/websocket` pattern syntax, e.g. `app.example.com`). Left unset, only `localhost`/`127.0.0.1` are allowed and a warning is logged — all WS upgrades from a real domain will be rejected. |
+| CORS allowed origins | `-cors-origins` | `JMESSAGE_CORS_ORIGINS` | Only needed if the frontend is served from a **different** origin than the API (e.g. a separate static host). Same-origin deployment (the default, frontend embedded in the binary) needs none of this. |
+| Data directory | `-data` | — | Must be a **persistent volume**. PetDB and attachment blobs live here; most PaaS/container runtimes default to ephemeral disk. |
+
+### Architectural constraints that shape deployment
+
+These aren't configuration gaps — they're load-bearing design
+decisions from the "no transactions" section below, and they set hard
+limits on how this can be operated:
+
+- **Single instance only.** Uniqueness checks (username registration,
+  DM dedup), the sequence allocator, and WebSocket fanout all assume
+  one process owns the data directory. This cannot be scaled
+  horizontally behind a naive load balancer — running two instances
+  against the same data directory (or two separate data directories
+  behind one balancer) breaks correctness. Plan for one instance with
+  restart-on-crash, not a replica set.
+- **No built-in backup.** There's no snapshot/export tooling. Back up
+  the data directory (PetDB files + `blobs/`) at the filesystem or
+  volume level (e.g. periodic volume snapshots) on whatever host runs
+  it.
+- **TLS termination is external.** The server speaks plain HTTP/WS;
+  put it behind a TLS-terminating reverse proxy or your platform's
+  HTTPS layer (e.g. a managed load balancer). WebSocket upgrades need
+  to pass through untouched (`Connection: Upgrade`).
 
 ## Scope
 

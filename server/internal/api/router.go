@@ -6,6 +6,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -38,13 +39,46 @@ type Server struct {
 	Reactions      ReactionNotifier // nil = no live fanout (tests)
 	Logger         *slog.Logger
 	MaxUploadBytes int64 // 0 = DefaultMaxUploadBytes
+
+	// AllowedOrigins enables CORS for these exact Origin values (e.g.
+	// "https://app.example.com"). Empty = no CORS headers, for the
+	// same-origin deployment (static assets served by this process).
+	AllowedOrigins []string
+}
+
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			for _, allowed := range s.AllowedOrigins {
+				if origin == allowed {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+					break
+				}
+			}
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Router assembles the full HTTP mux. wsHandler (may be nil) is mounted
-// at /ws and does its own token authentication (query parameter).
-func (s *Server) Router(wsHandler http.Handler) http.Handler {
+// at /ws and does its own token authentication (query parameter). static
+// (may be nil) serves the built frontend for every unmatched GET, with
+// an index.html fallback for client-side (History API) routes.
+func (s *Server) Router(wsHandler http.Handler, static fs.FS) http.Handler {
 	r := chi.NewRouter()
 	r.Use(chimw.Recoverer)
+	if len(s.AllowedOrigins) > 0 {
+		r.Use(s.corsMiddleware)
+	}
 
 	r.Post("/api/register", s.handleRegister)
 	r.Post("/api/login", s.handleLogin)
@@ -76,7 +110,34 @@ func (s *Server) Router(wsHandler http.Handler) http.Handler {
 	if wsHandler != nil {
 		r.Handle("/ws", wsHandler)
 	}
+
+	if static != nil {
+		r.NotFound(spaHandler(static))
+	}
 	return r
+}
+
+// spaHandler serves files from static, falling back to index.html for
+// any path that isn't a real static asset (client-side routes like
+// /settings) so browser refresh and deep links work. The fallback
+// writes index.html's bytes directly rather than rewriting the request
+// path, since http.FileServer treats a request path ending in
+// "/index.html" as a canonicalization case and redirects it to "./".
+func spaHandler(static fs.FS) http.HandlerFunc {
+	fileServer := http.FileServer(http.FS(static))
+	indexHTML, _ := fs.ReadFile(static, "index.html")
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path != "" {
+			if f, err := static.Open(path); err == nil {
+				f.Close()
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(indexHTML)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

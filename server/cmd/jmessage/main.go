@@ -7,19 +7,37 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"jmessage/internal/api"
 	"jmessage/internal/auth"
 	"jmessage/internal/blob"
 	"jmessage/internal/store"
+	"jmessage/internal/webui"
 	"jmessage/internal/ws"
 )
+
+// splitList parses a comma-separated flag/env value into trimmed,
+// non-empty entries.
+func splitList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // sweepAttachments reclaims attachment garbage: uploads whose message
 // never arrived (Pending > 24h; blob first, then metadata — a crash
@@ -92,6 +110,8 @@ func main() {
 	dataDir := flag.String("data", "./data", "PetDB data directory")
 	jwtSecret := flag.String("jwt-secret", "", "JWT signing secret (or env JMESSAGE_JWT_SECRET); empty = random per-process (sessions die on restart)")
 	maxUploadMB := flag.Int("max-upload-mb", 10, "maximum attachment size in MiB")
+	wsOrigins := flag.String("ws-origins", "", "comma-separated WebSocket origin patterns (or env JMESSAGE_WS_ORIGINS); empty = dev default (localhost only)")
+	corsOrigins := flag.String("cors-origins", "", "comma-separated allowed CORS origins for cross-origin frontends (or env JMESSAGE_CORS_ORIGINS); empty = no CORS (same-origin deployment)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -120,15 +140,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	origins := splitList(*wsOrigins)
+	if origins == nil {
+		origins = splitList(os.Getenv("JMESSAGE_WS_ORIGINS"))
+	}
+	if origins == nil {
+		origins = []string{"localhost:*", "127.0.0.1:*"}
+		logger.Warn("no -ws-origins configured; allowing only localhost (set -ws-origins or JMESSAGE_WS_ORIGINS for production)")
+	}
+
+	cors := splitList(*corsOrigins)
+	if cors == nil {
+		cors = splitList(os.Getenv("JMESSAGE_CORS_ORIGINS"))
+	}
+
 	tokens := auth.NewTokens([]byte(secret))
 	hub := ws.NewHub(st, logger)
 	wsHandler := &ws.Handler{
-		Store:  st,
-		Tokens: tokens,
-		Hub:    hub,
-		Logger: logger,
-		// Dev: the Vite proxy forwards the browser origin (localhost:5173).
-		OriginPatterns: []string{"localhost:*", "127.0.0.1:*"},
+		Store:          st,
+		Tokens:         tokens,
+		Hub:            hub,
+		Logger:         logger,
+		OriginPatterns: origins,
 	}
 	apiServer := &api.Server{
 		Store:          st,
@@ -138,9 +171,22 @@ func main() {
 		Reactions:      hub,
 		Logger:         logger,
 		MaxUploadBytes: int64(*maxUploadMB) << 20,
+		AllowedOrigins: cors,
 	}
 
-	srv := &http.Server{Addr: *addr, Handler: apiServer.Router(wsHandler)}
+	// Serve the embedded frontend only if it was actually built in
+	// (dist/ holds a real index.html, not just the source .gitkeep
+	// placeholder) — keeps `go run` working API-only against the Vite
+	// dev server when no frontend has been embedded.
+	var static fs.FS
+	if sub, err := fs.Sub(webui.Dist, "dist"); err == nil {
+		if _, err := fs.Stat(sub, "index.html"); err == nil {
+			static = sub
+			logger.Info("serving embedded frontend")
+		}
+	}
+
+	srv := &http.Server{Addr: *addr, Handler: apiServer.Router(wsHandler, static)}
 	go func() {
 		logger.Info("jmessage listening", "addr", *addr, "data", *dataDir)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

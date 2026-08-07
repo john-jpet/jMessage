@@ -1,0 +1,3 @@
+[submodule "PetDB"]
+	path = PetDB
+	url = https://github.com/john-jpet/PetDB.git

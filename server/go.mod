@@ -15,7 +15,6 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 )
 
-// The real PetDB engine is the sibling of jMessage under "! Dev".
-// NOTE: jMessage\PetDB is a stale reference copy — ../../PetDB (two
-// levels up from server/) is intentional; do not "fix" it to ../PetDB.
-replace petdb => ../../PetDB
+// PetDB source is vendored in-repo at ../PetDB (see repo root) so the
+// module builds standalone without a sibling checkout on disk.
+replace petdb => ../PetDB
