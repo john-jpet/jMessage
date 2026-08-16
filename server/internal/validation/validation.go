@@ -21,6 +21,8 @@ const (
 	AttachmentMaxBytes = 10 << 20          // 10 MB
 	AvatarMaxBytes     = 5 << 20           // 5 MB
 	AvatarMaxDimension = 4096              // pixels per side
+	PasswordMin        = 8
+	PasswordMax        = 128 // bounds Argon2's per-request hashing cost
 )
 
 var ErrInvalid = errors.New("validation")

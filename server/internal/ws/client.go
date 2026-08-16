@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	outboundBuffer = 256 // sized to absorb a resume replay burst
+	outboundBuffer = 256              // sized to absorb a resume replay burst
 	readTimeout    = 60 * time.Second // any frame (incl. app ping) resets it
 	pingInterval   = 30 * time.Second
 	writeTimeout   = 10 * time.Second
@@ -28,6 +28,15 @@ const (
 	// path will replay inline. Larger gaps are skipped here — the
 	// client's POST /api/sync is the authoritative catch-up.
 	resumeReplayCap = 50
+
+	// Per-connection frame budgets: generous bursts for read/typing
+	// traffic, a tighter sustained rate for handleSend since it does a
+	// durable write plus fanout per frame. Far above anything a real
+	// client (or human) generates, but enough to stop a flood.
+	frameBurst      = 40
+	frameRefillRate = 20 // frames/sec sustained, any type
+	sendBurst       = 10
+	sendRefillRate  = 3 // messages/sec sustained
 )
 
 // Handler upgrades /ws?token= requests and runs clients against the hub.
@@ -75,14 +84,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(64 << 10)
 
 	c := &Client{
-		UserID:   uid,
-		DeviceID: deviceID,
-		conn:     conn,
-		out:      make(chan []byte, outboundBuffer),
-		hub:      h.Hub,
-		store:    h.Store,
-		logger:   h.Logger,
-		done:     make(chan struct{}),
+		UserID:     uid,
+		DeviceID:   deviceID,
+		conn:       conn,
+		out:        make(chan []byte, outboundBuffer),
+		hub:        h.Hub,
+		store:      h.Store,
+		logger:     h.Logger,
+		done:       make(chan struct{}),
+		frameLimit: newTokenBucket(frameBurst, frameRefillRate),
+		sendLimit:  newTokenBucket(sendBurst, sendRefillRate),
 	}
 	h.Hub.register(c)
 	defer func() {
@@ -107,6 +118,9 @@ type Client struct {
 
 	done      chan struct{}
 	closeOnce sync.Once
+
+	frameLimit *tokenBucket // every dispatched frame
+	sendLimit  *tokenBucket // TypeSend specifically (persists + fans out)
 }
 
 // trySend queues a frame without blocking. A slow client whose buffer
@@ -191,6 +205,10 @@ func (c *Client) writeLoop(ctx context.Context) {
 }
 
 func (c *Client) dispatch(f Frame) {
+	if f.Type != "" && !c.frameLimit.allow() {
+		c.trySend(errorFrame("rate_limited", "too many frames, slow down", f.TempID))
+		return
+	}
 	switch f.Type {
 	case TypeSend:
 		c.handleSend(f)
@@ -305,6 +323,10 @@ func (c *Client) handleWatermark(f Frame, read bool) {
 // conversation's online members (the sender's other devices included,
 // this connection excluded).
 func (c *Client) handleSend(f Frame) {
+	if !c.sendLimit.allow() {
+		c.trySend(errorFrame("rate_limited", "sending too fast, slow down", f.TempID))
+		return
+	}
 	// Centralized rules: ≤2000 chars, valid UTF-8, empty allowed only
 	// with attachments.
 	if err := validation.MessageBody(f.Body, len(f.AttachmentIDs) > 0); err != nil {

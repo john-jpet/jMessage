@@ -61,6 +61,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "empty upload")
 		return
 	}
+	// Narrow scope on purpose: attachments are images/GIFs/video, not a
+	// general file host. Checked against the sniffed type, not the
+	// client-declared one.
+	if err := validation.AttachmentMime(res.MimeType); err != nil {
+		s.Blobs.Remove(res.ID)
+		writeErr(w, http.StatusBadRequest, userMsg(err))
+		return
+	}
 
 	filename := sanitizeFilename(r.Header.Get("X-Filename"))
 

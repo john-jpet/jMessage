@@ -89,6 +89,34 @@ func TestGroupName(t *testing.T) {
 	}
 }
 
+func TestAttachmentMime(t *testing.T) {
+	for _, ok := range []string{"image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "video/webm", "video/quicktime"} {
+		if err := AttachmentMime(ok); err != nil {
+			t.Errorf("AttachmentMime(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"application/pdf", "text/plain", "application/zip", "application/octet-stream", "audio/mpeg", ""} {
+		if err := AttachmentMime(bad); err == nil {
+			t.Errorf("AttachmentMime(%q) accepted", bad)
+		}
+	}
+}
+
+func TestPassword(t *testing.T) {
+	if err := Password(strings.Repeat("p", 8)); err != nil {
+		t.Error("8-char password rejected:", err)
+	}
+	if err := Password(strings.Repeat("p", 128)); err != nil {
+		t.Error("128-char password rejected:", err)
+	}
+	if err := Password(strings.Repeat("p", 7)); err == nil {
+		t.Error("7-char password accepted")
+	}
+	if err := Password(strings.Repeat("p", 129)); err == nil {
+		t.Error("129-char password accepted")
+	}
+}
+
 func TestAvatarRules(t *testing.T) {
 	if err := AvatarMime("image/png"); err != nil {
 		t.Error(err)

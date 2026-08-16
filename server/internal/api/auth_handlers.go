@@ -37,8 +37,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.DisplayName = displayName
-	if len(req.Password) < 8 {
-		writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
+	if err := validation.Password(req.Password); err != nil {
+		writeErr(w, http.StatusBadRequest, userMsg(err))
 		return
 	}
 
@@ -58,6 +58,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req credentials
 	if !readJSON(w, r, &req) {
+		return
+	}
+	// Reject oversized passwords before they reach Argon2 (same response
+	// as a wrong password: no information leak about which check failed).
+	if len(req.Password) > validation.PasswordMax {
+		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	u, err := s.Store.GetUserByUsername(req.Username)

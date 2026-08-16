@@ -45,6 +45,17 @@ func Status(s string) (string, error) {
 	return s, nil
 }
 
+// Password validates a raw (pre-hash) password length. Bounds only —
+// no composition rules — but the max matters: without it, an
+// arbitrarily long password makes every login/register call pay
+// Argon2's 64 MiB/pass cost over attacker-controlled input size.
+func Password(s string) error {
+	if n := len(s); n < PasswordMin || n > PasswordMax {
+		return fail("password must be 8-128 characters")
+	}
+	return nil
+}
+
 // AvatarMimes are the accepted avatar content types (std-lib decodable,
 // so the server can verify dimensions from the header alone).
 var AvatarMimes = map[string]bool{

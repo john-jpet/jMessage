@@ -144,11 +144,16 @@ func TestAvatarValidation(t *testing.T) {
 		t.Fatalf("committed attachment accepted as avatar: %d", code)
 	}
 
-	// Non-image bytes.
-	_, txtRef := e.upload(aTok, "notes.txt", "text/plain", []byte("just some text, definitely not an image"))
+	// Non-image bytes never even make it into the blob store.
+	if code, _ := e.upload(aTok, "notes.txt", "text/plain", []byte("just some text, definitely not an image")); code != http.StatusBadRequest {
+		t.Fatalf("text file accepted as attachment: %d", code)
+	}
+
+	// A type the upload endpoint allows (video) but avatars don't.
+	_, vidRef := e.upload(aTok, "clip.mp4", "video/mp4", bytes.Repeat([]byte{0}, 64))
 	if code := e.call("PATCH", "/api/settings/profile", aTok,
-		map[string]any{"avatarAttachmentID": txtRef.ID}, nil); code != http.StatusBadRequest {
-		t.Fatalf("text file accepted as avatar: %d", code)
+		map[string]any{"avatarAttachmentID": vidRef.ID}, nil); code != http.StatusBadRequest {
+		t.Fatalf("video accepted as avatar: %d", code)
 	}
 
 	// Unknown attachment.

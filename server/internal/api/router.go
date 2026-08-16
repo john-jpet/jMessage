@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -80,11 +81,30 @@ func (s *Server) Router(wsHandler http.Handler, static fs.FS) http.Handler {
 		r.Use(s.corsMiddleware)
 	}
 
-	r.Post("/api/register", s.handleRegister)
-	r.Post("/api/login", s.handleLogin)
+	// Router-wide backstop: every request, authenticated or not, pays a
+	// generous per-IP cap. This is the safety net for routes that do
+	// their own auth outside the Bearer group (attachment downloads,
+	// /ws) and for anything added later without a bespoke limiter.
+	r.Use(newRateLimiter(600, time.Minute).byIPHandler)
+
+	// Credential-stuffing / registration-spam guard: tighter per-IP caps
+	// ahead of the Argon2 hashing and store lookups those handlers do.
+	loginLimit := newRateLimiter(10, time.Minute)
+	registerLimit := newRateLimiter(5, time.Hour)
+	r.Post("/api/register", registerLimit.byIP(s.handleRegister))
+	r.Post("/api/login", loginLimit.byIP(s.handleLogin))
+
+	// General per-user cap for every authenticated action, plus tighter
+	// per-user caps on the endpoints that do real work (storage writes,
+	// disk I/O) rather than a cheap read.
+	authLimit := newRateLimiter(180, time.Minute)
+	uploadLimit := newRateLimiter(30, time.Minute)
+	convCreateLimit := newRateLimiter(20, time.Minute)
+	reactionLimit := newRateLimiter(60, time.Minute)
 
 	r.Group(func(r chi.Router) {
 		r.Use(s.Tokens.Middleware)
+		r.Use(authLimit.byUserHandler)
 		r.Get("/api/me", s.handleMe)
 		r.Get("/api/users/lookup", s.handleUserLookup)
 		r.Get("/api/users/{id}/profile", s.handleProfile)
@@ -92,19 +112,20 @@ func (s *Server) Router(wsHandler http.Handler, static fs.FS) http.Handler {
 		r.Patch("/api/settings/profile", s.handlePatchProfileSettings)
 		r.Post("/api/sync", s.handleSync)
 		r.Get("/api/conversations", s.handleListConversations)
-		r.Post("/api/conversations", s.handleCreateConversation)
+		r.Post("/api/conversations", convCreateLimit.byUser(s.handleCreateConversation))
 		r.Get("/api/conversations/{id}", s.handleGetConversation)
 		r.Get("/api/conversations/{id}/members", s.handleListMembers)
 		r.Post("/api/conversations/{id}/members", s.handleAddMember)
 		r.Get("/api/conversations/{id}/messages", s.handleHistory)
-		r.Put("/api/conversations/{id}/messages/{seq}/reactions/{emoji}", s.handleReaction(true))
-		r.Delete("/api/conversations/{id}/messages/{seq}/reactions/{emoji}", s.handleReaction(false))
+		r.Put("/api/conversations/{id}/messages/{seq}/reactions/{emoji}", reactionLimit.byUser(s.handleReaction(true)))
+		r.Delete("/api/conversations/{id}/messages/{seq}/reactions/{emoji}", reactionLimit.byUser(s.handleReaction(false)))
 		r.Get("/api/conversations/{id}/receipts", s.handleReceipts)
-		r.Post("/api/uploads", s.handleUpload)
+		r.Post("/api/uploads", uploadLimit.byUser(s.handleUpload))
 	})
 
 	// Outside the Bearer-only group: does its own header-or-query token
-	// check so <img src> can load attachments.
+	// check so <img src> can load attachments. Covered by the router-wide
+	// per-IP backstop above.
 	r.Get("/api/attachments/{id}", s.handleDownload)
 
 	if wsHandler != nil {

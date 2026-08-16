@@ -143,9 +143,24 @@ receipts (visible tab + focused window + newest message in the viewport
 via IntersectionObserver, 250 ms batching — an open-but-hidden
 conversation never marks read); and a centralized
 `internal/validation` package: 2000-char messages, 10 MB attachments
-with Content-Length pre-checks and read deadlines, 5 MB / 4096²
-avatars, username `[a-zA-Z0-9_]{3,32}`, UTF-8 + control-character
-rejection everywhere.
+with Content-Length pre-checks and read deadlines, restricted to a
+sniffed-content-type allow-list (images/GIFs/video — no PDFs, archives,
+or other general files), 5 MB / 4096² avatars, username
+`[a-zA-Z0-9_]{3,32}`, 8-128 char passwords (the upper bound caps
+Argon2's per-request hashing cost), UTF-8 + control-character rejection
+everywhere. Every REST route is rate-limited: a router-wide per-IP
+backstop (600/min) covers all traffic including pre-auth and
+custom-auth routes (login, register, attachment downloads), `/api/login`
+and `/api/register` carry tighter per-IP caps (10/min, 5/hour) against
+credential stuffing and registration spam, and every authenticated
+route carries a per-user cap (180/min general, plus tighter caps of
+30/min on uploads, 20/min on conversation creation, and 60/min on
+reactions for the endpoints that do real storage/CPU work). The
+WebSocket path mirrors this per-connection: a token-bucket bounds total
+frames (burst 40, 20/sec sustained) and a stricter bucket bounds
+`send` frames specifically (burst 10, 3/sec sustained) since each one
+is a durable write plus fanout; typing relays were already
+server-throttled per (user, conversation).
 
 **Excluded (by design):** full-text search, message edit/delete, push
 notifications, encryption, video transcoding, thumbnails, resumable

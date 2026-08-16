@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,11 @@ func TestRegisterLoginMe(t *testing.T) {
 		map[string]string{"username": "b~d name!", "password": "password123"}, nil); code != http.StatusBadRequest {
 		t.Fatalf("bad username status %d", code)
 	}
+	// Oversized password (Argon2 cost-DoS guard) → 400.
+	if code := e.call("POST", "/api/register", "",
+		map[string]string{"username": "carol", "password": strings.Repeat("p", 129)}, nil); code != http.StatusBadRequest {
+		t.Fatalf("oversized password status %d", code)
+	}
 
 	// Login roundtrip.
 	var sess struct {
@@ -136,6 +142,103 @@ func TestRegisterLoginMe(t *testing.T) {
 	}
 	if code := e.call("GET", "/api/me", "", nil, nil); code != http.StatusUnauthorized {
 		t.Fatalf("missing token status %d", code)
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	e := newEnv(t)
+	e.register("alice")
+
+	// The limiter (10/min) trips before the 11th attempt, regardless of
+	// whether the credentials are right — this guards the login handler
+	// itself, not just failed attempts.
+	var last int
+	for i := 0; i < 11; i++ {
+		last = e.call("POST", "/api/login", "",
+			map[string]string{"username": "alice", "password": "wrong-password"}, nil)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("11th login attempt in a minute: %d, want 429", last)
+	}
+}
+
+func TestRegisterRateLimit(t *testing.T) {
+	e := newEnv(t)
+
+	var last int
+	for i := 0; i < 6; i++ {
+		last = e.call("POST", "/api/register", "",
+			map[string]string{"username": fmt.Sprintf("user%d", i), "password": "password123"}, nil)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("6th registration in an hour: %d, want 429", last)
+	}
+}
+
+func TestConversationCreateRateLimit(t *testing.T) {
+	e := newEnv(t)
+	aTok, _ := e.register("alice")
+	bTok, bUser := e.register("bob")
+	_ = bTok
+
+	var last int
+	for i := 0; i < 21; i++ {
+		last = e.call("POST", "/api/conversations", aTok,
+			map[string]any{"type": "dm", "participantIDs": []string{bUser.ID}}, nil)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("21st conversation create in a minute: %d, want 429", last)
+	}
+}
+
+func TestReactionRateLimit(t *testing.T) {
+	e := newEnv(t)
+	aTok, aUser := e.register("alice")
+	bTok, bUser := e.register("bob")
+	var dm convResponse
+	e.call("POST", "/api/conversations", aTok,
+		map[string]any{"type": "dm", "participantIDs": []string{bUser.ID}}, &dm)
+	if _, err := e.store.AppendMessage(dm.ID, aUser.ID, "rl-1", "hi", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var last int
+	for i := 0; i < 61; i++ {
+		last = e.call("PUT", "/api/conversations/"+dm.ID+"/messages/1/reactions/%F0%9F%91%8D", bTok, nil, nil)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("61st reaction in a minute: %d, want 429", last)
+	}
+}
+
+// TestAuthGeneralRateLimit checks the router-wide per-user cap applies
+// even to a cheap, otherwise-unlimited GET endpoint.
+func TestAuthGeneralRateLimit(t *testing.T) {
+	e := newEnv(t)
+	aTok, _ := e.register("alice")
+
+	var last int
+	for i := 0; i < 181; i++ {
+		last = e.call("GET", "/api/me", aTok, nil, nil)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("181st /api/me call in a minute: %d, want 429", last)
+	}
+}
+
+// TestGlobalIPRateLimit checks the router-wide backstop (600/min per
+// IP) catches traffic that never reaches a handler-specific limiter —
+// here, repeated unauthenticated requests to a route outside the
+// Bearer group.
+func TestGlobalIPRateLimit(t *testing.T) {
+	e := newEnv(t)
+
+	var last int
+	for i := 0; i < 601; i++ {
+		last = e.call("GET", "/api/attachments/a8f92c1f-7d3e-4e21-a44c-9f3d1a2b7c88", "", nil, nil)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("601st unauthenticated request in a minute: %d, want 429", last)
 	}
 }
 

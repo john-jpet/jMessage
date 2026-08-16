@@ -158,6 +158,49 @@ func TestUploadLimits(t *testing.T) {
 	}
 }
 
+// TestUploadMimeRestriction: attachments are limited to images/GIFs/video
+// (sniffed content, not the client-declared header) — no PDFs, archives,
+// or other general files.
+func TestUploadMimeRestriction(t *testing.T) {
+	e := newEnv(t)
+	aTok, _ := e.register("alice")
+
+	if code, _ := e.upload(aTok, "photo.png", "", pngPayload); code != http.StatusOK {
+		t.Fatalf("png upload: %d", code)
+	}
+	// Sniffing wins over a spoofed Content-Type header.
+	if code, _ := e.upload(aTok, "fake.png", "image/png", []byte("not actually a png")); code != http.StatusBadRequest {
+		t.Fatalf("spoofed mime upload: %d", code)
+	}
+	if code, _ := e.upload(aTok, "doc.pdf", "application/pdf", []byte("%PDF-1.4 not a real pdf but declared as one")); code != http.StatusBadRequest {
+		t.Fatalf("pdf upload: %d", code)
+	}
+	if code, _ := e.upload(aTok, "archive.zip", "application/zip", []byte("PK\x03\x04 fake zip bytes")); code != http.StatusBadRequest {
+		t.Fatalf("zip upload: %d", code)
+	}
+	// A rejected upload leaves no blob behind.
+	entries, _ := e.blobs.List()
+	if len(entries) != 1 {
+		t.Fatalf("blob count = %d, want 1 (only the accepted png)", len(entries))
+	}
+}
+
+// TestUploadRateLimit: uploads are the most storage/CPU-costly
+// authenticated action, so they carry their own tighter per-user cap
+// (30/min) on top of the general per-user request cap.
+func TestUploadRateLimit(t *testing.T) {
+	e := newEnv(t)
+	aTok, _ := e.register("alice")
+
+	var last int
+	for i := 0; i < 31; i++ {
+		last, _ = e.upload(aTok, "x.png", "", pngPayload)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("31st upload in a minute: %d, want 429", last)
+	}
+}
+
 // TestMessagesCarryAttachmentRefs: history and sync responses embed the
 // refs with zero extra work.
 func TestMessagesCarryAttachmentRefs(t *testing.T) {
@@ -168,7 +211,7 @@ func TestMessagesCarryAttachmentRefs(t *testing.T) {
 	var dm convResponse
 	e.call("POST", "/api/conversations", aTok,
 		map[string]any{"type": "dm", "participantIDs": []string{bUser.ID}}, &dm)
-	_, ref := e.upload(aTok, "doc.txt", "text/plain", []byte("attached text file"))
+	_, ref := e.upload(aTok, "photo.png", "", testPNG(t, 32, 32))
 	if _, err := e.store.AppendMessage(dm.ID, aUser.ID, "cm-1", "see attached", []string{ref.ID}); err != nil {
 		t.Fatal(err)
 	}

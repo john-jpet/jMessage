@@ -14,6 +14,19 @@ const MAX_BODY_CHARS = 2000; // mirrors internal/validation on the server
 const COUNTER_THRESHOLD = 1800;
 const MAX_FILE_BYTES = 10 << 20; // 10 MB — rejected before any upload
 
+// Mirrors validation.AttachmentMimes on the server: images, GIFs, and
+// video only. This is a UX filter, not a security boundary — the
+// server sniffs and enforces the real allow-list regardless.
+const ALLOWED_FILE_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+];
+
 export default function Composer({ files, onFilesChange, onSend, onTyping, focusKey }: Props) {
   const [text, setText] = useState("");
   const [fileError, setFileError] = useState("");
@@ -57,12 +70,24 @@ export default function Composer({ files, onFilesChange, onSend, onTyping, focus
     if (!list) return;
     const incoming = Array.from(list);
     const oversized = incoming.filter((f) => f.size > MAX_FILE_BYTES);
-    const ok = incoming.filter((f) => f.size <= MAX_FILE_BYTES);
-    setFileError(
-      oversized.length > 0
-        ? `${oversized.map((f) => f.name).join(", ")} exceed${oversized.length === 1 ? "s" : ""} the 10 MB limit and won't be attached.`
-        : "",
+    const unsupported = incoming.filter(
+      (f) => f.size <= MAX_FILE_BYTES && !ALLOWED_FILE_TYPES.includes(f.type),
     );
+    const ok = incoming.filter(
+      (f) => f.size <= MAX_FILE_BYTES && ALLOWED_FILE_TYPES.includes(f.type),
+    );
+    const errors: string[] = [];
+    if (oversized.length > 0) {
+      errors.push(
+        `${oversized.map((f) => f.name).join(", ")} exceed${oversized.length === 1 ? "s" : ""} the 10 MB limit and won't be attached.`,
+      );
+    }
+    if (unsupported.length > 0) {
+      errors.push(
+        `${unsupported.map((f) => f.name).join(", ")} ${unsupported.length === 1 ? "isn't a supported type" : "aren't supported types"} — only images, GIFs, and video can be attached.`,
+      );
+    }
+    setFileError(errors.join(" "));
     if (ok.length > 0) onFilesChange([...files, ...ok].slice(0, MAX_FILES));
   }
 
@@ -106,6 +131,7 @@ export default function Composer({ files, onFilesChange, onSend, onTyping, focus
           ref={fileInputRef}
           type="file"
           multiple
+          accept={ALLOWED_FILE_TYPES.join(",")}
           className="hidden"
           onChange={(e) => addFiles(e.target.files)}
           aria-hidden="true"
