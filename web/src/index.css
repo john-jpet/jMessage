@@ -14,14 +14,26 @@
   --duration-normal: 200ms;
 }
 
-/* Font scaling: rem-based Tailwind sizing means one root variable
-   scales the entire interface. */
+/* Font scaling is limited to typography. Changing the root font size
+   would also resize every rem-based gap, control, radius, and avatar. */
 :root {
   --font-scale: 1;
+  --text-xs: calc(0.75rem * var(--font-scale));
+  --text-sm: calc(0.875rem * var(--font-scale));
+  --text-base: calc(1rem * var(--font-scale));
+  --text-lg: calc(1.125rem * var(--font-scale));
+  --text-xl: calc(1.25rem * var(--font-scale));
+  --text-4xl: calc(2.25rem * var(--font-scale));
 }
-html {
-  font-size: calc(16px * var(--font-scale));
+
+body {
+  font-size: calc(1rem * var(--font-scale));
 }
+
+/* Small bespoke labels use arbitrary Tailwind sizes rather than theme
+   tokens, so include them explicitly in the accessibility setting. */
+.text-\[10px\] { font-size: calc(10px * var(--font-scale)); }
+.text-\[11px\] { font-size: calc(11px * var(--font-scale)); }
 
 /* Keyboard-first: an unmistakable focus ring, only for keyboard focus. */
 :focus-visible {
