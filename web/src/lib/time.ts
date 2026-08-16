@@ -15,7 +15,10 @@ export function relativeTime(ts: number): string {
 export function lastSeenLabel(ts: number): string {
   if (!ts) return "offline";
   const r = relativeTime(ts);
-  return r === "now" ? "last seen just now" : `last seen ${r === "yesterday" ? r : r + " ago"}`;
+  if (r === "now") return "last seen just now";
+  if (r === "yesterday") return "last seen yesterday";
+  if (/^\d+[mh]$/.test(r)) return `last seen ${r} ago`;
+  return `last seen ${r}`;
 }
 
 export function isSameDay(a: number, b: number): boolean {
