@@ -24,7 +24,12 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
-  const [draft, setDraft] = useState<{ displayName: string; status: string } | null>(null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [draft, setDraft] = useState<{
+    displayName: string;
+    status: string;
+    avatarAttachmentID: string;
+  } | null>(null);
 
   const { data: profile } = useQuery({
     queryKey: ["settingsProfile"],
@@ -33,9 +38,21 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
 
   const displayName = draft?.displayName ?? profile?.displayName ?? "";
   const status = draft?.status ?? profile?.status ?? "";
+  const avatarAttachmentID = draft?.avatarAttachmentID ?? profile?.avatarID ?? "";
   const dirty =
     draft !== null &&
-    (draft.displayName !== (profile?.displayName ?? "") || draft.status !== (profile?.status ?? ""));
+    (draft.displayName !== (profile?.displayName ?? "") ||
+      draft.status !== (profile?.status ?? "") ||
+      draft.avatarAttachmentID !== (profile?.avatarID ?? ""));
+
+  function updateDraft(changes: Partial<NonNullable<typeof draft>>) {
+    setDraft((current) => ({
+      displayName: current?.displayName ?? profile?.displayName ?? "",
+      status: current?.status ?? profile?.status ?? "",
+      avatarAttachmentID: current?.avatarAttachmentID ?? profile?.avatarID ?? "",
+      ...changes,
+    }));
+  }
 
   const patch = useMutation({
     mutationFn: (body: Record<string, string>) =>
@@ -61,6 +78,7 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
   async function pickAvatar(file: File | undefined) {
     if (!file) return;
     setError("");
+    setUploadingAvatar(true);
     try {
       const resized = await resizeImage(file, 256);
       if (resized.size > AVATAR_MAX_BYTES) {
@@ -71,10 +89,11 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
         type: resized.type || "image/jpeg",
       });
       const ref = await uploadBlob(named, "avatar.jpg");
-      patch.mutate({ avatarAttachmentID: ref.id });
+      updateDraft({ avatarAttachmentID: ref.id });
     } catch (err) {
       setError(err instanceof Error ? err.message : "avatar upload failed");
     } finally {
+      setUploadingAvatar(false);
       if (fileRef.current) fileRef.current.value = "";
     }
   }
@@ -113,7 +132,7 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
                   id={profile.id}
                   name={displayName || profile.username}
                   size="lg"
-                  avatarID={profile.avatarID || undefined}
+                  avatarID={avatarAttachmentID || undefined}
                 />
                 <div className="flex flex-col gap-1.5">
                   <input
@@ -125,13 +144,19 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
                   />
                   <button
                     onClick={() => fileRef.current?.click()}
+                    disabled={uploadingAvatar || patch.isPending}
                     className="rounded-lg bg-accent px-3 py-1 text-xs text-white hover:bg-accent-hover"
                   >
-                    {profile.avatarID ? "Change picture" : "Upload picture"}
+                    {uploadingAvatar
+                      ? "Uploading…"
+                      : avatarAttachmentID
+                        ? "Change picture"
+                        : "Upload picture"}
                   </button>
-                  {profile.avatarID && (
+                  {avatarAttachmentID && (
                     <button
-                      onClick={() => patch.mutate({ avatarAttachmentID: "" })}
+                      onClick={() => updateDraft({ avatarAttachmentID: "" })}
+                      disabled={uploadingAvatar || patch.isPending}
                       className="rounded-lg px-3 py-1 text-xs text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-700"
                     >
                       Remove picture
@@ -149,7 +174,7 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
                   className={inputCls}
                   value={displayName}
                   maxLength={DISPLAY_NAME_MAX}
-                  onChange={(e) => setDraft({ displayName: e.target.value, status })}
+                  onChange={(e) => updateDraft({ displayName: e.target.value })}
                 />
               </label>
 
@@ -166,7 +191,7 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
                   className={inputCls}
                   placeholder="What's happening?"
                   value={status}
-                  onChange={(e) => setDraft({ displayName, status: e.target.value })}
+                  onChange={(e) => updateDraft({ status: e.target.value })}
                 />
               </label>
 
@@ -196,8 +221,8 @@ export default function Settings({ self, onBack, onProfileChange }: Props) {
                 </p>
               )}
               <button
-                onClick={() => patch.mutate({ displayName, status })}
-                disabled={!dirty || patch.isPending || status.length > STATUS_MAX}
+                onClick={() => patch.mutate({ displayName, status, avatarAttachmentID })}
+                disabled={!dirty || patch.isPending || uploadingAvatar || status.length > STATUS_MAX}
                 className="rounded-lg bg-accent px-4 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-40"
               >
                 {patch.isPending ? "Saving…" : "Save changes"}
